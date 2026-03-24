@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools >= 68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ifcbkit"
+version = "0.1.0"
+description = "A lean, modern Python library for parsing and accessing IFCB raw data and products"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "Pillow",
+    "aiofiles",
+]
+
+[project.optional-dependencies]
+s3 = ["amplify-storage-utils[s3] @ git+https://github.com/WHOIGit/amplify-storage-utils.git@v1.7.0"]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

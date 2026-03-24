@@ -1,0 +1,610 @@
+"""
+IFCB fileset discovery, validation, and data directory traversal.
+
+Both sync and async APIs for finding IFCB data on the filesystem:
+- list_filesets: generator yielding (dir, basename) for complete .hdr/.adc/.roi triplets
+- find_fileset: recursive search for a specific bin by PID
+- list_data_dirs: directories containing .hdr files
+- Path validation with configurable include/exclude filters
+"""
+
+import asyncio
+import os
+
+import aiofiles.os as aios
+import aiofiles.ospath as aiopath
+
+from .identifiers import add_target, parse_roi_id
+
+
+DEFAULT_EXCLUDE = ['skip', 'beads']
+DEFAULT_INCLUDE = ['data']
+
+
+def validate_path(
+    filepath,
+    exclude=DEFAULT_EXCLUDE,
+    include=DEFAULT_INCLUDE,
+):
+    """
+    Validate an IFCB raw data file path.
+
+    A well-formed raw data file path relative to some root only contains
+    path components that are not excluded and are either included or part
+    of the file's basename (without extension).
+
+    :param filepath: the pathname of the file
+    :param exclude: directory names to ignore
+    :param include: directory names to include, even if they do not match
+      the path's basename
+    :returns: True if the pathname is valid
+    """
+    if not set(exclude).isdisjoint(set(include)):
+        raise ValueError('include and exclude must be disjoint')
+
+    dirname, basename = os.path.split(filepath)
+    pid, ext = os.path.splitext(basename)
+    components = dirname.split(os.sep)
+    for c in components:
+        if c in exclude:
+            return False
+        if c not in include and c not in pid:
+            return False
+    return True
+
+
+# --- Internal helpers: directory entry splitting ---
+
+async def _async_split_dir_entries(dirpath, *, exclude=DEFAULT_EXCLUDE, sort=True, reverse=False):
+    """Return (dirnames, filenames) for dirpath using aiofiles/os.path."""
+    names = await aios.listdir(dirpath)
+    dirnames, filenames = [], []
+
+    async def _isdir(name):
+        return await aiopath.isdir(os.path.join(dirpath, name))
+
+    isdirs = await asyncio.gather(*(_isdir(n) for n in names))
+    for name, is_dir in zip(names, isdirs):
+        if is_dir:
+            if name in exclude:
+                continue
+            dirnames.append(name)
+        else:
+            filenames.append(name)
+
+    if sort:
+        dirnames.sort(reverse=reverse)
+        filenames.sort(reverse=reverse)
+    return dirnames, filenames
+
+
+def _sync_split_dir_entries(dirpath, *, exclude=DEFAULT_EXCLUDE, sort=True, reverse=False):
+    """Return (dirnames, filenames) for dirpath using synchronous os calls."""
+    names = os.listdir(dirpath)
+    dirnames, filenames = [], []
+
+    for name in names:
+        if os.path.isdir(os.path.join(dirpath, name)):
+            if name in exclude:
+                continue
+            dirnames.append(name)
+        else:
+            filenames.append(name)
+
+    if sort:
+        dirnames.sort(reverse=reverse)
+        filenames.sort(reverse=reverse)
+    return dirnames, filenames
+
+
+# --- Fileset listing ---
+
+async def async_list_filesets(
+    dirpath,
+    exclude=DEFAULT_EXCLUDE,
+    include=DEFAULT_INCLUDE,
+    sort=True,
+    validate=True,
+    require_adc=True,
+    require_roi=True,
+):
+    """
+    Async generator yielding (dp, basename) for each .hdr/.adc/(.roi) fileset found.
+
+    :param dirpath: root directory to search
+    :param exclude: directory names to skip
+    :param include: directory names to always enter
+    :param sort: whether to sort entries
+    :param validate: whether to validate paths
+    :param require_adc: require .adc file presence
+    :param require_roi: require .roi file presence
+    """
+    if not set(exclude).isdisjoint(set(include)):
+        raise ValueError('include and exclude must be disjoint')
+
+    stack = [dirpath]
+    while stack:
+        dp = stack.pop()
+        dirnames, filenames = await _async_split_dir_entries(dp, exclude=exclude, sort=sort, reverse=True)
+
+        for d in dirnames:
+            stack.append(os.path.join(dp, d))
+
+        fnset = set(filenames)
+        for f in filenames:
+            basename, extension = f[:-4], f[-3:]
+            has_adc = (basename + '.adc') in fnset
+            has_roi = (basename + '.roi') in fnset
+            if extension == 'hdr' and (has_adc or not require_adc) and (has_roi or not require_roi):
+                if validate:
+                    if dp == dirpath:
+                        reldir = ''
+                    else:
+                        reldir = dp[len(dirpath) + 1:]
+                    if not validate_path(os.path.join(reldir, basename), include=include, exclude=exclude):
+                        continue
+                yield dp, basename
+
+
+def sync_list_filesets(
+    dirpath,
+    exclude=DEFAULT_EXCLUDE,
+    include=DEFAULT_INCLUDE,
+    sort=True,
+    validate=True,
+    require_adc=True,
+    require_roi=True,
+):
+    """
+    Sync generator yielding (dp, basename) for each .hdr/.adc/(.roi) fileset found.
+
+    :param dirpath: root directory to search
+    :param exclude: directory names to skip
+    :param include: directory names to always enter
+    :param sort: whether to sort entries
+    :param validate: whether to validate paths
+    :param require_adc: require .adc file presence
+    :param require_roi: require .roi file presence
+    """
+    if not set(exclude).isdisjoint(set(include)):
+        raise ValueError('include and exclude must be disjoint')
+
+    stack = [dirpath]
+    while stack:
+        dp = stack.pop()
+        dirnames, filenames = _sync_split_dir_entries(dp, exclude=exclude, sort=sort, reverse=True)
+
+        for d in dirnames:
+            stack.append(os.path.join(dp, d))
+
+        fnset = set(filenames)
+        for f in filenames:
+            basename, extension = f[:-4], f[-3:]
+            has_adc = (basename + '.adc') in fnset
+            has_roi = (basename + '.roi') in fnset
+            if extension == 'hdr' and (has_adc or not require_adc) and (has_roi or not require_roi):
+                if validate:
+                    if dp == dirpath:
+                        reldir = ''
+                    else:
+                        reldir = dp[len(dirpath) + 1:]
+                    if not validate_path(os.path.join(reldir, basename), include=include, exclude=exclude):
+                        continue
+                yield dp, basename
+
+
+# --- Data directory listing ---
+
+async def async_list_data_dirs(dirpath, exclude=DEFAULT_EXCLUDE, sort=True, prune=True):
+    """
+    Async generator yielding descendant directories that contain at least one .hdr file.
+
+    :param dirpath: root directory to search
+    :param exclude: directory names to skip
+    :param sort: whether to sort entries
+    :param prune: if True, stop descending once .hdr files are found
+    """
+    dirnames, filenames = await _async_split_dir_entries(dirpath, exclude=exclude, sort=sort, reverse=False)
+
+    for name in filenames:
+        if name[-3:] == 'hdr':
+            yield dirpath
+            if prune:
+                return
+            break
+
+    for name in dirnames:
+        child = os.path.join(dirpath, name)
+        async for dd in async_list_data_dirs(child, exclude=exclude, sort=sort, prune=prune):
+            yield dd
+
+
+def sync_list_data_dirs(dirpath, exclude=DEFAULT_EXCLUDE, sort=True, prune=True):
+    """
+    Sync generator yielding descendant directories that contain at least one .hdr file.
+
+    :param dirpath: root directory to search
+    :param exclude: directory names to skip
+    :param sort: whether to sort entries
+    :param prune: if True, stop descending once .hdr files are found
+    """
+    dirnames, filenames = _sync_split_dir_entries(dirpath, exclude=exclude, sort=sort, reverse=False)
+
+    for name in filenames:
+        if name[-3:] == 'hdr':
+            yield dirpath
+            if prune:
+                return
+            break
+
+    for name in dirnames:
+        child = os.path.join(dirpath, name)
+        for dd in sync_list_data_dirs(child, exclude=exclude, sort=sort, prune=prune):
+            yield dd
+
+
+# --- Find specific fileset ---
+
+async def async_find_fileset(
+    dirpath,
+    pid,
+    include=DEFAULT_INCLUDE,
+    exclude=DEFAULT_EXCLUDE,
+    require_adc=True,
+    require_roi=True,
+):
+    """
+    Async recursive search for a specific fileset by PID.
+
+    :param dirpath: root directory to search
+    :param pid: the bin ID to find
+    :returns: basepath (without extension) or None
+    """
+    try:
+        names = await aios.listdir(dirpath)
+    except FileNotFoundError:
+        return None
+
+    # check direct match first
+    hdr_name = pid + '.hdr'
+    if hdr_name in names:
+        basepath = os.path.join(dirpath, pid)
+        if require_adc and (pid + '.adc') not in names:
+            return None
+        if require_roi and (pid + '.roi') not in names:
+            return None
+        return basepath
+
+    # recurse into plausible subdirectories
+    for name in names:
+        if name in exclude:
+            continue
+        if name in include or name in pid:
+            child = os.path.join(dirpath, name)
+            if await aiopath.isdir(child):
+                fs = await async_find_fileset(
+                    child, pid,
+                    include=include, exclude=exclude,
+                    require_adc=require_adc, require_roi=require_roi,
+                )
+                if fs is not None:
+                    return fs
+    return None
+
+
+def sync_find_fileset(
+    dirpath,
+    pid,
+    include=DEFAULT_INCLUDE,
+    exclude=DEFAULT_EXCLUDE,
+    require_adc=True,
+    require_roi=True,
+):
+    """
+    Sync recursive search for a specific fileset by PID.
+
+    :param dirpath: root directory to search
+    :param pid: the bin ID to find
+    :returns: basepath (without extension) or None
+    """
+    try:
+        names = os.listdir(dirpath)
+    except FileNotFoundError:
+        return None
+
+    # check direct match first
+    hdr_name = pid + '.hdr'
+    if hdr_name in names:
+        basepath = os.path.join(dirpath, pid)
+        if require_adc and (pid + '.adc') not in names:
+            return None
+        if require_roi and (pid + '.roi') not in names:
+            return None
+        return basepath
+
+    # recurse into plausible subdirectories
+    for name in names:
+        if name in exclude:
+            continue
+        if name in include or name in pid:
+            child = os.path.join(dirpath, name)
+            if os.path.isdir(child):
+                fs = sync_find_fileset(
+                    child, pid,
+                    include=include, exclude=exclude,
+                    require_adc=require_adc, require_roi=require_roi,
+                )
+                if fs is not None:
+                    return fs
+    return None
+
+
+# --- Data directory classes ---
+
+class SyncIfcbDataDirectory:
+    """Synchronous representation of an IFCB data directory.
+
+    Provides dict-like access to IFCB filesets: exists, paths, list,
+    list_images, read_images, read_image.
+
+    :param root_path: the root directory containing IFCB filesets
+    :param include: list of directory names to include when searching
+    :param exclude: list of directory names to exclude when searching
+    :param require_adc: if True, only consider filesets with .adc files
+    :param require_roi: if True, only consider filesets with .roi files
+    """
+
+    def __init__(
+        self,
+        root_path,
+        include=DEFAULT_INCLUDE,
+        exclude=DEFAULT_EXCLUDE,
+        require_adc=True,
+        require_roi=True,
+    ):
+        self.root_path = root_path
+        self.include = include
+        self.exclude = exclude
+        self.require_adc = require_adc
+        self.require_roi = require_roi
+
+        if not set(exclude).isdisjoint(set(include)):
+            raise ValueError('include and exclude must be disjoint')
+        if require_roi and not require_adc:
+            raise ValueError('require_roi=True requires require_adc=True')
+
+    def _exists(self, pid):
+        fs = sync_find_fileset(
+            self.root_path, pid,
+            include=self.include, exclude=self.exclude,
+            require_adc=self.require_adc, require_roi=self.require_roi,
+        )
+        if fs is None:
+            return False, None
+        return True, fs
+
+    def exists(self, pid):
+        """Return True if the fileset for the given PID exists."""
+        exists, _ = self._exists(pid)
+        return exists
+
+    def paths(self, pid):
+        """Return dict of file paths for the given PID."""
+        exists, fs = self._exists(pid)
+        if not exists:
+            raise KeyError(pid)
+        return {
+            'hdr': fs + '.hdr',
+            'adc': fs + '.adc' if self.require_adc else None,
+            'roi': fs + '.roi' if self.require_roi else None,
+        }
+
+    def list(self):
+        """Yield dicts of {pid, hdr, adc, roi} for all filesets."""
+        for dp, bn in sync_list_filesets(
+            self.root_path,
+            exclude=self.exclude, include=self.include,
+            require_adc=self.require_adc, require_roi=self.require_roi,
+        ):
+            yield {
+                'pid': bn,
+                'hdr': os.path.join(dp, bn + '.hdr'),
+                'adc': os.path.join(dp, bn + '.adc') if self.require_adc else None,
+                'roi': os.path.join(dp, bn + '.roi') if self.require_roi else None,
+            }
+
+    def list_images(self, pid):
+        """List ROI image metadata from the .adc file for the given PID."""
+        from .adc import _columns_for_bin_id
+        paths = self.paths(pid)
+        adc_path = paths.get('adc')
+        cols = _columns_for_bin_id(pid)
+        x_col, y_col = cols['x'], cols['y']
+        w_col, h_col = cols['width'], cols['height']
+        images = {}
+        with open(adc_path, 'r') as adc_file:
+            for i, line in enumerate(adc_file):
+                fields = line.strip().split(',')
+                x = int(fields[x_col])
+                y = int(fields[y_col])
+                width = int(fields[w_col])
+                height = int(fields[h_col])
+                if width == 0 or height == 0:
+                    continue
+                images[i + 1] = {
+                    'roi_id': add_target(pid, i + 1),
+                    'x': x,
+                    'y': y,
+                    'width': width,
+                    'height': height,
+                }
+        return images
+
+    def read_images(self, pid, rois=None):
+        """Read ROI images as PIL Images, with auto-stitching for I-style bins.
+
+        Returns a BinImages (Mapping[int, Image]) with stitched I-style
+        pairs. If rois is specified, returns a plain dict subset.
+        """
+        if not self.require_roi:
+            raise ValueError('require_roi must be True to read ROI images')
+        from .stitching import bin_images
+        paths = self.paths(pid)
+        with open(paths['adc'], 'rb') as f:
+            adc_bytes = f.read()
+        with open(paths['roi'], 'rb') as f:
+            roi_bytes = f.read()
+        images = bin_images(pid, adc_bytes, roi_bytes)
+        if rois is not None:
+            return {t: images[t] for t in rois if t in images}
+        return images
+
+    def read_image(self, roi_id):
+        """Read a single ROI image by its ROI ID."""
+        bin_id, target_num = parse_roi_id(roi_id)
+        images = self.read_images(bin_id, rois={target_num})
+        if target_num not in images:
+            raise KeyError(roi_id)
+        return images[target_num]
+
+
+class AsyncIfcbDataDirectory:
+    """Async representation of an IFCB data directory.
+
+    Provides async versions of exists, paths, list, list_images,
+    read_images, read_image.
+
+    :param root_path: the root directory containing IFCB filesets
+    :param include: list of directory names to include when searching
+    :param exclude: list of directory names to exclude when searching
+    :param require_adc: if True, only consider filesets with .adc files
+    :param require_roi: if True, only consider filesets with .roi files
+    """
+
+    def __init__(
+        self,
+        root_path,
+        include=DEFAULT_INCLUDE,
+        exclude=DEFAULT_EXCLUDE,
+        require_adc=True,
+        require_roi=True,
+    ):
+        self.root_path = root_path
+        self.include = include
+        self.exclude = exclude
+        self.require_adc = require_adc
+        self.require_roi = require_roi
+
+        if not set(exclude).isdisjoint(set(include)):
+            raise ValueError('include and exclude must be disjoint')
+        if require_roi and not require_adc:
+            raise ValueError('require_roi=True requires require_adc=True')
+
+    async def _exists(self, pid):
+        fs = await async_find_fileset(
+            self.root_path, pid,
+            include=self.include, exclude=self.exclude,
+            require_adc=self.require_adc, require_roi=self.require_roi,
+        )
+        if fs is None:
+            return False, None
+        return True, fs
+
+    async def exists(self, pid):
+        """Return True if the fileset for the given PID exists."""
+        exists, _ = await self._exists(pid)
+        return exists
+
+    async def paths(self, pid):
+        """Return dict of file paths for the given PID."""
+        exists, fs = await self._exists(pid)
+        if not exists:
+            raise KeyError(pid)
+        return {
+            'hdr': fs + '.hdr',
+            'adc': fs + '.adc' if self.require_adc else None,
+            'roi': fs + '.roi' if self.require_roi else None,
+        }
+
+    async def list(self):
+        """Async generator yielding dicts of {pid, hdr, adc, roi} for all filesets."""
+        async for dp, bn in async_list_filesets(
+            self.root_path,
+            exclude=self.exclude, include=self.include,
+            require_adc=self.require_adc, require_roi=self.require_roi,
+        ):
+            yield {
+                'pid': bn,
+                'hdr': os.path.join(dp, bn + '.hdr'),
+                'adc': os.path.join(dp, bn + '.adc') if self.require_adc else None,
+                'roi': os.path.join(dp, bn + '.roi') if self.require_roi else None,
+            }
+
+    async def list_images(self, pid):
+        """List ROI image metadata from the .adc file for the given PID."""
+        import aiofiles
+        from .adc import _columns_for_bin_id
+        paths = await self.paths(pid)
+        adc_path = paths.get('adc')
+        cols = _columns_for_bin_id(pid)
+        x_col, y_col = cols['x'], cols['y']
+        w_col, h_col = cols['width'], cols['height']
+        images = {}
+        async with aiofiles.open(adc_path, 'r') as adc_file:
+            adc_text = await adc_file.read()
+            for i, line in enumerate(adc_text.splitlines()):
+                fields = line.strip().split(',')
+                x = int(fields[x_col])
+                y = int(fields[y_col])
+                width = int(fields[w_col])
+                height = int(fields[h_col])
+                if width == 0 or height == 0:
+                    continue
+                images[i + 1] = {
+                    'roi_id': add_target(pid, i + 1),
+                    'x': x,
+                    'y': y,
+                    'width': width,
+                    'height': height,
+                }
+        return images
+
+    async def images_exist(self, pid, roi_ids):
+        """Check if the specified ROI IDs exist in the fileset."""
+        images = await self.list_images(pid)
+        existing_roi_ids = {img['roi_id'] for img in images.values()}
+        return {roi_id: (roi_id in existing_roi_ids) for roi_id in roi_ids}
+
+    async def image_exists(self, roi_id):
+        """Check if the specified ROI ID exists."""
+        bin_id, _ = parse_roi_id(roi_id)
+        exists = await self.images_exist(bin_id, [roi_id])
+        return exists[roi_id]
+
+    async def read_images(self, pid, rois=None):
+        """Read ROI images as PIL Images, with auto-stitching for I-style bins.
+
+        Returns a BinImages (Mapping[int, Image]) with stitched I-style
+        pairs. If rois is specified, returns a plain dict subset.
+        """
+        if not self.require_roi:
+            raise ValueError('require_roi must be True to read ROI images')
+        import aiofiles
+        from .stitching import bin_images
+        paths = await self.paths(pid)
+        async with aiofiles.open(paths['adc'], 'rb') as f:
+            adc_bytes = await f.read()
+        async with aiofiles.open(paths['roi'], 'rb') as f:
+            roi_bytes = await f.read()
+        images = await asyncio.to_thread(bin_images, pid, adc_bytes, roi_bytes)
+        if rois is not None:
+            return {t: images[t] for t in rois if t in images}
+        return images
+
+    async def read_image(self, roi_id):
+        """Read a single ROI image by its ROI ID."""
+        bin_id, target_num = parse_roi_id(roi_id)
+        images = await self.read_images(bin_id, rois={target_num})
+        if target_num not in images:
+            raise KeyError(roi_id)
+        return images[target_num]
