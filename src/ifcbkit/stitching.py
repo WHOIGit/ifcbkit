@@ -11,7 +11,7 @@ PIL-only implementation — no numpy, scipy, or pandas.
 
 from collections.abc import Mapping
 
-from PIL import Image, ImageChops, ImageFilter
+from PIL import Image
 
 
 # Overlap threshold in pixels — consecutive ROIs must overlap by more than
@@ -108,49 +108,40 @@ def stitch_pair(
 def infill_stitched_image(image: Image.Image, mask: Image.Image) -> Image.Image:
     """Fill gap region with mean boundary intensity.
 
-    Takes output from stitch_pair(). Finds pixels adjacent to the gap
-    (4-connectivity boundary), computes their mean intensity, and fills
+    Takes output from stitch_pair(). Finds image-data pixels adjacent to the
+    gap (4-connectivity boundary), computes their mean intensity, and fills
     the gap uniformly with that value.
 
     :param image: stitched image (mode 'L', gap pixels are 0)
     :param mask: gap mask (mode '1', white=gap)
     :returns: infilled image (mode 'L')
     """
-    # If no gap pixels, nothing to do
     if not mask.getbbox():
         return image.copy()
 
-    # Dilate mask by 1px using 4-connectivity kernel
-    mask_l = mask.convert('L')
-    dilate_kernel = ImageFilter.Kernel(
-        (3, 3), [0, 1, 0, 1, 1, 1, 0, 1, 0], scale=1, offset=0
-    )
-    dilated = mask_l.filter(dilate_kernel)
-    dilated_binary = dilated.point(lambda p: 1 if p > 0 else 0, '1')
-
-    # Boundary = dilated AND NOT(original mask)
-    # These are image-data pixels adjacent to the gap
-    mask_inv = ImageChops.invert(mask)
-    boundary = ImageChops.logical_and(dilated_binary, mask_inv)
-
-    # Compute mean intensity of boundary pixels
-    boundary_pixels = boundary.load()
-    image_pixels = image.load()
     w, h = image.size
+    mpx = mask.load()
+    ipx = image.load()
+
+    # Find boundary: image-data pixels with at least one gap neighbor
     total = 0
     count = 0
     for y in range(h):
         for x in range(w):
-            if boundary_pixels[x, y]:
-                total += image_pixels[x, y]
-                count += 1
+            if mpx[x, y]:  # skip gap pixels
+                continue
+            # Check 4-connected neighbors for adjacent gap
+            for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h and mpx[nx, ny]:
+                    total += ipx[x, y]
+                    count += 1
+                    break
 
     fill_value = round(total / count) if count > 0 else 0
 
-    # Fill gap with boundary mean
     result = image.copy()
     result.paste(Image.new('L', image.size, fill_value), mask=mask)
-
     return result
 
 
