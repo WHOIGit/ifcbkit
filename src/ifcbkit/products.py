@@ -10,8 +10,6 @@ Helpers for locating derived product files alongside raw data:
 Both sync and async discovery APIs are provided. Readers are sync-only.
 """
 
-from __future__ import annotations
-
 import csv
 import os
 import re
