@@ -57,6 +57,11 @@ from .fileset import (
 
 # Products
 from .products import (
+    async_find_product_file,
+    async_list_product_files,
+    async_blob_path,
+    async_class_scores_path,
+    async_features_path,
     read_blobs,
     read_class_scores,
     read_features,
