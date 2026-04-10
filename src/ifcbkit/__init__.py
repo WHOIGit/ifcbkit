@@ -62,11 +62,15 @@ from .products import (
     async_blob_path,
     async_class_scores_path,
     async_features_path,
+    read_blobs,
+    read_class_scores,
+    read_features,
     sync_find_product_file,
     sync_list_product_files,
     sync_blob_path,
     sync_class_scores_path,
     sync_features_path,
+    ClassScoresRows,
 )
 
 # Store base classes (always available)

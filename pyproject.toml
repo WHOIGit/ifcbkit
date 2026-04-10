@@ -14,6 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+hdf5 = ["h5py"]
 s3 = ["amplify-storage-utils[s3] @ git+https://github.com/WHOIGit/amplify-storage-utils.git@v1.7.0"]
 dev = ["pytest", "pytest-asyncio"]
 
