@@ -20,6 +20,51 @@ from .identifiers import add_target, parse_roi_id
 DEFAULT_EXCLUDE = ['skip', 'beads']
 DEFAULT_INCLUDE = ['data']
 
+# Corrected ("modified") ADC files live in a directory named ``adcmod`` that is
+# a sibling of a raw data directory, laid out as ``adcmod/<day>/<pid>.adc.mod``
+# and byte-compatible with the raw ``.adc``. Most datasets have no such sibling.
+ADCMOD_DIR = 'adcmod'
+ADCMOD_EXT = '.adc.mod'
+
+
+def _adcmod_candidates(fileset_dir, pid, root_path):
+    """Yield candidate ``.adc.mod`` paths, nearest ancestor first.
+
+    For each ancestor of ``fileset_dir`` (up to and including ``root_path``),
+    yield the path a corrected ADC file would have in an ``adcmod`` sibling of
+    that ancestor. The day subdirectory name is taken to be the fileset's own
+    containing directory name.
+
+    :param fileset_dir: directory containing the raw fileset
+    :param pid: the bin ID
+    :param root_path: search boundary; ancestors are not walked past this
+    """
+    day = os.path.basename(fileset_dir)
+    root_abs = os.path.abspath(root_path)
+    d = fileset_dir
+    while True:
+        parent = os.path.dirname(d)
+        yield os.path.join(parent, ADCMOD_DIR, day, pid + ADCMOD_EXT)
+        if os.path.abspath(d) == root_abs or parent == d:
+            break
+        d = parent
+
+
+def _sync_resolve_adc_path(fileset_dir, pid, root_path):
+    """Return a corrected ``.adc.mod`` path if present, else the raw ``.adc``."""
+    for cand in _adcmod_candidates(fileset_dir, pid, root_path):
+        if os.path.exists(cand):
+            return cand
+    return os.path.join(fileset_dir, pid + '.adc')
+
+
+async def _async_resolve_adc_path(fileset_dir, pid, root_path):
+    """Return a corrected ``.adc.mod`` path if present, else the raw ``.adc``."""
+    for cand in _adcmod_candidates(fileset_dir, pid, root_path):
+        if await aiopath.exists(cand):
+            return cand
+    return os.path.join(fileset_dir, pid + '.adc')
+
 
 def validate_path(
     filepath,
@@ -393,9 +438,12 @@ class SyncIfcbDataDirectory:
         exists, fs = self._exists(pid)
         if not exists:
             raise KeyError(pid)
+        adc = None
+        if self.require_adc:
+            adc = _sync_resolve_adc_path(os.path.dirname(fs), os.path.basename(fs), self.root_path)
         return {
             'hdr': fs + '.hdr',
-            'adc': fs + '.adc' if self.require_adc else None,
+            'adc': adc,
             'roi': fs + '.roi' if self.require_roi else None,
         }
 
@@ -409,7 +457,7 @@ class SyncIfcbDataDirectory:
             yield {
                 'pid': bn,
                 'hdr': os.path.join(dp, bn + '.hdr'),
-                'adc': os.path.join(dp, bn + '.adc') if self.require_adc else None,
+                'adc': _sync_resolve_adc_path(dp, bn, self.root_path) if self.require_adc else None,
                 'roi': os.path.join(dp, bn + '.roi') if self.require_roi else None,
             }
 
@@ -520,9 +568,12 @@ class AsyncIfcbDataDirectory:
         exists, fs = await self._exists(pid)
         if not exists:
             raise KeyError(pid)
+        adc = None
+        if self.require_adc:
+            adc = await _async_resolve_adc_path(os.path.dirname(fs), os.path.basename(fs), self.root_path)
         return {
             'hdr': fs + '.hdr',
-            'adc': fs + '.adc' if self.require_adc else None,
+            'adc': adc,
             'roi': fs + '.roi' if self.require_roi else None,
         }
 
@@ -533,10 +584,13 @@ class AsyncIfcbDataDirectory:
             exclude=self.exclude, include=self.include,
             require_adc=self.require_adc, require_roi=self.require_roi,
         ):
+            adc = None
+            if self.require_adc:
+                adc = await _async_resolve_adc_path(dp, bn, self.root_path)
             yield {
                 'pid': bn,
                 'hdr': os.path.join(dp, bn + '.hdr'),
-                'adc': os.path.join(dp, bn + '.adc') if self.require_adc else None,
+                'adc': adc,
                 'roi': os.path.join(dp, bn + '.roi') if self.require_roi else None,
             }
 
