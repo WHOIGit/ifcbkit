@@ -78,12 +78,31 @@ def test_adcmod_appears_in_list(tmp_path):
     assert entries[0]['adc'] == mod
 
 
-def test_adcmod_boundary_not_walked_past_root(tmp_path):
-    # adcmod as sibling of root_path itself is still resolved
+def test_adcmod_inside_root_is_ignored(tmp_path):
+    # adcmod is strictly a sibling of root_path; one nested inside root (here a
+    # sibling of the intermediate year directory) must not be used.
+    root = tmp_path / 'data'
+    _make_fileset(str(root / '2017' / DAY), PID)
+    _make_adcmod(str(root / 'adcmod'), DAY, PID)
+    dd = SyncIfcbDataDirectory(str(root))
+    assert dd.paths(PID)['adc'] == str(root / '2017' / DAY / f'{PID}.adc')
+
+
+def test_adcmod_sibling_of_nonroot_ancestor_is_ignored(tmp_path):
+    # <root> is <tmp>/raw/data, so only <tmp>/raw/adcmod counts -- an adcmod
+    # sibling of <tmp>/raw's own parent must not be used.
+    root = tmp_path / 'raw' / 'data'
+    _make_fileset(str(root / DAY), PID)
+    _make_adcmod(str(tmp_path / 'adcmod'), DAY, PID)
+    dd = SyncIfcbDataDirectory(str(root))
+    assert dd.paths(PID)['adc'] == str(root / DAY / f'{PID}.adc')
+
+
+def test_adcmod_sibling_of_root_with_trailing_slash(tmp_path):
     root = tmp_path / 'data'
     _make_fileset(str(root / DAY), PID)
     mod = _make_adcmod(str(tmp_path / 'adcmod'), DAY, PID)
-    dd = SyncIfcbDataDirectory(str(root))
+    dd = SyncIfcbDataDirectory(str(root) + os.sep)
     assert dd.paths(PID)['adc'] == mod
 
 
