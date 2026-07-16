@@ -2,13 +2,14 @@
 Filesystem-backed stores for IFCB bin data and ROI images.
 """
 
+import os
 from io import BytesIO
 
 import aiofiles
 
 from ..identifiers import parse_roi_id
 from ..fileset import (
-    async_find_fileset,
+    async_find_fileset, async_resolve_adc_path,
     SyncIfcbDataDirectory, AsyncIfcbDataDirectory,
     DEFAULT_INCLUDE, DEFAULT_EXCLUDE,
 )
@@ -41,6 +42,11 @@ class AsyncFilesystemBinStore(AsyncBinStore):
         )
         if basepath is None:
             return None
+        if ext == 'adc':
+            return await async_resolve_adc_path(
+                os.path.dirname(basepath), os.path.basename(basepath),
+                self.root_path,
+            )
         return f"{basepath}.{ext}"
 
     async def exists(self, key: str) -> bool:

@@ -50,7 +50,7 @@ def _adcmod_candidates(fileset_dir, pid, root_path):
         d = parent
 
 
-def _sync_resolve_adc_path(fileset_dir, pid, root_path):
+def sync_resolve_adc_path(fileset_dir, pid, root_path):
     """Return a corrected ``.adc.mod`` path if present, else the raw ``.adc``."""
     for cand in _adcmod_candidates(fileset_dir, pid, root_path):
         if os.path.exists(cand):
@@ -58,7 +58,7 @@ def _sync_resolve_adc_path(fileset_dir, pid, root_path):
     return os.path.join(fileset_dir, pid + '.adc')
 
 
-async def _async_resolve_adc_path(fileset_dir, pid, root_path):
+async def async_resolve_adc_path(fileset_dir, pid, root_path):
     """Return a corrected ``.adc.mod`` path if present, else the raw ``.adc``."""
     for cand in _adcmod_candidates(fileset_dir, pid, root_path):
         if await aiopath.exists(cand):
@@ -440,7 +440,7 @@ class SyncIfcbDataDirectory:
             raise KeyError(pid)
         adc = None
         if self.require_adc:
-            adc = _sync_resolve_adc_path(os.path.dirname(fs), os.path.basename(fs), self.root_path)
+            adc = sync_resolve_adc_path(os.path.dirname(fs), os.path.basename(fs), self.root_path)
         return {
             'hdr': fs + '.hdr',
             'adc': adc,
@@ -457,7 +457,7 @@ class SyncIfcbDataDirectory:
             yield {
                 'pid': bn,
                 'hdr': os.path.join(dp, bn + '.hdr'),
-                'adc': _sync_resolve_adc_path(dp, bn, self.root_path) if self.require_adc else None,
+                'adc': sync_resolve_adc_path(dp, bn, self.root_path) if self.require_adc else None,
                 'roi': os.path.join(dp, bn + '.roi') if self.require_roi else None,
             }
 
@@ -570,7 +570,7 @@ class AsyncIfcbDataDirectory:
             raise KeyError(pid)
         adc = None
         if self.require_adc:
-            adc = await _async_resolve_adc_path(os.path.dirname(fs), os.path.basename(fs), self.root_path)
+            adc = await async_resolve_adc_path(os.path.dirname(fs), os.path.basename(fs), self.root_path)
         return {
             'hdr': fs + '.hdr',
             'adc': adc,
@@ -586,7 +586,7 @@ class AsyncIfcbDataDirectory:
         ):
             adc = None
             if self.require_adc:
-                adc = await _async_resolve_adc_path(dp, bn, self.root_path)
+                adc = await async_resolve_adc_path(dp, bn, self.root_path)
             yield {
                 'pid': bn,
                 'hdr': os.path.join(dp, bn + '.hdr'),
