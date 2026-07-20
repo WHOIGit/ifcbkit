@@ -20,6 +20,45 @@ from .identifiers import add_target, parse_roi_id
 DEFAULT_EXCLUDE = ['skip', 'beads']
 DEFAULT_INCLUDE = ['data']
 
+# Corrected ("modified") ADC files live in a directory named ``adcmod`` that is
+# a sibling of the raw data root directory, laid out as
+# ``adcmod/<day>/<pid>.adc.mod`` and byte-compatible with the raw ``.adc``.
+# Most datasets have no such sibling.
+ADCMOD_DIR = 'adcmod'
+ADCMOD_EXT = '.adc.mod'
+
+
+def _adcmod_path(fileset_dir, pid, root_path):
+    """Return the path a corrected ADC file would have for this fileset.
+
+    The ``adcmod`` directory is strictly a sibling of ``root_path``. The day
+    subdirectory name is the fileset's own containing directory name.
+
+    :param fileset_dir: directory containing the raw fileset
+    :param pid: the bin ID
+    :param root_path: the raw data root directory
+    """
+    day = os.path.basename(os.path.normpath(fileset_dir))
+    adcmod_root = os.path.join(
+        os.path.dirname(os.path.abspath(root_path)), ADCMOD_DIR)
+    return os.path.join(adcmod_root, day, pid + ADCMOD_EXT)
+
+
+def sync_resolve_adc_path(fileset_dir, pid, root_path):
+    """Return a corrected ``.adc.mod`` path if present, else the raw ``.adc``."""
+    cand = _adcmod_path(fileset_dir, pid, root_path)
+    if os.path.exists(cand):
+        return cand
+    return os.path.join(fileset_dir, pid + '.adc')
+
+
+async def async_resolve_adc_path(fileset_dir, pid, root_path):
+    """Return a corrected ``.adc.mod`` path if present, else the raw ``.adc``."""
+    cand = _adcmod_path(fileset_dir, pid, root_path)
+    if await aiopath.exists(cand):
+        return cand
+    return os.path.join(fileset_dir, pid + '.adc')
+
 
 def validate_path(
     filepath,
@@ -393,9 +432,12 @@ class SyncIfcbDataDirectory:
         exists, fs = self._exists(pid)
         if not exists:
             raise KeyError(pid)
+        adc = None
+        if self.require_adc:
+            adc = sync_resolve_adc_path(os.path.dirname(fs), os.path.basename(fs), self.root_path)
         return {
             'hdr': fs + '.hdr',
-            'adc': fs + '.adc' if self.require_adc else None,
+            'adc': adc,
             'roi': fs + '.roi' if self.require_roi else None,
         }
 
@@ -409,7 +451,7 @@ class SyncIfcbDataDirectory:
             yield {
                 'pid': bn,
                 'hdr': os.path.join(dp, bn + '.hdr'),
-                'adc': os.path.join(dp, bn + '.adc') if self.require_adc else None,
+                'adc': sync_resolve_adc_path(dp, bn, self.root_path) if self.require_adc else None,
                 'roi': os.path.join(dp, bn + '.roi') if self.require_roi else None,
             }
 
@@ -520,9 +562,12 @@ class AsyncIfcbDataDirectory:
         exists, fs = await self._exists(pid)
         if not exists:
             raise KeyError(pid)
+        adc = None
+        if self.require_adc:
+            adc = await async_resolve_adc_path(os.path.dirname(fs), os.path.basename(fs), self.root_path)
         return {
             'hdr': fs + '.hdr',
-            'adc': fs + '.adc' if self.require_adc else None,
+            'adc': adc,
             'roi': fs + '.roi' if self.require_roi else None,
         }
 
@@ -533,10 +578,13 @@ class AsyncIfcbDataDirectory:
             exclude=self.exclude, include=self.include,
             require_adc=self.require_adc, require_roi=self.require_roi,
         ):
+            adc = None
+            if self.require_adc:
+                adc = await async_resolve_adc_path(dp, bn, self.root_path)
             yield {
                 'pid': bn,
                 'hdr': os.path.join(dp, bn + '.hdr'),
-                'adc': os.path.join(dp, bn + '.adc') if self.require_adc else None,
+                'adc': adc,
                 'roi': os.path.join(dp, bn + '.roi') if self.require_roi else None,
             }
 

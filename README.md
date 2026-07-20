@@ -150,3 +150,9 @@ adc = parse_adc_file(bin_id, '/path/to/bin.adc', extended=True)
 ```
 
 Low-level stitching functions (`detect_pairs`, `stitch_pair`, `infill_stitched_image`) and raw extraction utilities (`extract_roi_images`, `extract_roi_image`) are available for specialized use cases.
+
+## Note: corrected ADC files (`adcmod`)
+
+Some datasets (e.g. MVCO) keep corrected ADC files outside the raw data directory so the raw data stays untouched. These live in an `adcmod` directory that is strictly a sibling of the raw data root, laid out as `adcmod/<day>/<pid>.adc.mod`, where `<day>` is the name of the directory containing the raw fileset. The `.adc.mod` format is byte-compatible with `.adc`.
+
+`ifcbkit` resolves these transparently: when listing or fetching a fileset it uses the corrected ADC in place of the raw `.adc` if one exists. Only the ADC file is substituted — `.hdr` and `.roi` always come from the raw data directory — and a raw `.adc` must still be present for the bin to be discovered.
