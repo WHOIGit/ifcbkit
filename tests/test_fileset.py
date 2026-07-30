@@ -214,6 +214,25 @@ def test_list_filter_by_instrument_iterable(tmp_path):
     assert _pids(dd.list(instrument=[100, 200])) == [BIN_A, BIN_B, BIN_C]
 
 
+def test_list_filter_by_instrument_str(tmp_path):
+    dd = SyncIfcbDataDirectory(str(_make_multi_bin_root(tmp_path)))
+    assert _pids(dd.list(instrument='200')) == [BIN_C]
+
+
+def test_list_filter_by_instrument_str_iterable(tmp_path):
+    dd = SyncIfcbDataDirectory(str(_make_multi_bin_root(tmp_path)))
+    assert _pids(dd.list(instrument=['100', '200'])) == [BIN_A, BIN_B, BIN_C]
+
+
+def test_make_fileset_filter_bad_instrument_raises():
+    with pytest.raises(ValueError):
+        make_fileset_filter(instrument='not-an-int')
+    with pytest.raises(ValueError):
+        make_fileset_filter(instrument=['100', 'bad'])
+    with pytest.raises(ValueError):
+        make_fileset_filter(instrument=True)
+
+
 def test_list_filter_start_time_inclusive(tmp_path):
     dd = SyncIfcbDataDirectory(str(_make_multi_bin_root(tmp_path)))
     start = datetime(2020, 1, 2, 12, 0, 0, tzinfo=timezone.utc)

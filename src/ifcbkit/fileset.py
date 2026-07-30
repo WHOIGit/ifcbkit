@@ -110,9 +110,10 @@ def make_fileset_filter(start_time=None, end_time=None, instrument=None):
 
     :param start_time: inclusive lower bound (datetime); naive treated as UTC
     :param end_time: exclusive upper bound (datetime); naive treated as UTC
-    :param instrument: instrument ID (int) or iterable of instrument IDs
+    :param instrument: instrument ID (int or str) or iterable of instrument IDs
     :returns: a predicate accepting a bin ID basename, or None if no filter is
       active. Basenames that fail to parse are excluded when any filter is set.
+    :raises ValueError: if ``instrument`` cannot be coerced to int(s)
 
     The timestamp range is half-open ``[start_time, end_time)``.
     """
@@ -124,10 +125,15 @@ def make_fileset_filter(start_time=None, end_time=None, instrument=None):
 
     if instrument is None:
         instruments = None
-    elif isinstance(instrument, int):
-        instruments = {instrument}
     else:
-        instruments = set(instrument)
+        # Coerce scalars (int, or str like "127") and iterables of IDs to a set
+        # of ints. Anything that won't coerce is a ValueError.
+        scalars = (int, str) if not isinstance(instrument, bool) else ()
+        values = [instrument] if isinstance(instrument, scalars) else instrument
+        try:
+            instruments = {int(v) for v in values}
+        except (TypeError, ValueError) as e:
+            raise ValueError(f'invalid instrument filter: {instrument!r}') from e
 
     def _pred(basename):
         try:
