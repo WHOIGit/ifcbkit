@@ -3,10 +3,13 @@
 import asyncio
 import os
 import shutil
+from datetime import datetime, timezone
 
 import pytest
 
-from ifcbkit.fileset import SyncIfcbDataDirectory, AsyncIfcbDataDirectory
+from ifcbkit.fileset import (
+    SyncIfcbDataDirectory, AsyncIfcbDataDirectory, make_fileset_filter,
+)
 
 PID = 'D20170426T164105_IFCB009'
 DAY = 'D20170426'
@@ -171,3 +174,75 @@ def test_istyle_corrected_adc_content_is_used(tmp_path):
     corrected = SyncIfcbDataDirectory(str(root)).read_images(I_PID)
     assert dropped in baseline
     assert dropped not in corrected
+
+
+# --- list() filtering: timestamp range / instrument ---
+
+# Bins spanning two days, two instruments. Timestamps parsed from the PIDs.
+BIN_A = 'D20200101T000000_IFCB100'  # 2020-01-01, instr 100
+BIN_B = 'D20200102T120000_IFCB100'  # 2020-01-02, instr 100
+BIN_C = 'D20200103T000000_IFCB200'  # 2020-01-03, instr 200
+
+
+def _make_multi_bin_root(tmp_path):
+    root = tmp_path / 'data'
+    for pid in (BIN_A, BIN_B, BIN_C):
+        _make_fileset(str(root / pid[:9]), pid)
+    return root
+
+
+def _pids(entries):
+    return sorted(e['pid'] for e in entries)
+
+
+def test_make_fileset_filter_none_when_no_args():
+    assert make_fileset_filter() is None
+
+
+def test_list_no_filter_returns_all(tmp_path):
+    dd = SyncIfcbDataDirectory(str(_make_multi_bin_root(tmp_path)))
+    assert _pids(dd.list()) == [BIN_A, BIN_B, BIN_C]
+
+
+def test_list_filter_by_instrument_int(tmp_path):
+    dd = SyncIfcbDataDirectory(str(_make_multi_bin_root(tmp_path)))
+    assert _pids(dd.list(instrument=200)) == [BIN_C]
+
+
+def test_list_filter_by_instrument_iterable(tmp_path):
+    dd = SyncIfcbDataDirectory(str(_make_multi_bin_root(tmp_path)))
+    assert _pids(dd.list(instrument=[100, 200])) == [BIN_A, BIN_B, BIN_C]
+
+
+def test_list_filter_start_time_inclusive(tmp_path):
+    dd = SyncIfcbDataDirectory(str(_make_multi_bin_root(tmp_path)))
+    start = datetime(2020, 1, 2, 12, 0, 0, tzinfo=timezone.utc)
+    assert _pids(dd.list(start_time=start)) == [BIN_B, BIN_C]
+
+
+def test_list_filter_end_time_exclusive(tmp_path):
+    dd = SyncIfcbDataDirectory(str(_make_multi_bin_root(tmp_path)))
+    end = datetime(2020, 1, 3, 0, 0, 0, tzinfo=timezone.utc)
+    assert _pids(dd.list(end_time=end)) == [BIN_A, BIN_B]
+
+
+def test_list_filter_range_and_instrument(tmp_path):
+    dd = SyncIfcbDataDirectory(str(_make_multi_bin_root(tmp_path)))
+    start = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2020, 1, 3, tzinfo=timezone.utc)
+    assert _pids(dd.list(start_time=start, end_time=end, instrument=100)) == [BIN_A, BIN_B]
+
+
+def test_list_filter_naive_datetime_treated_utc(tmp_path):
+    dd = SyncIfcbDataDirectory(str(_make_multi_bin_root(tmp_path)))
+    start = datetime(2020, 1, 3)  # naive -> UTC
+    assert _pids(dd.list(start_time=start)) == [BIN_C]
+
+
+def test_async_list_filter(tmp_path):
+    dd = AsyncIfcbDataDirectory(str(_make_multi_bin_root(tmp_path)))
+
+    async def _collect():
+        return [e async for e in dd.list(instrument=100)]
+
+    assert _pids(asyncio.run(_collect())) == [BIN_A, BIN_B]

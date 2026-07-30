@@ -10,11 +10,12 @@ Both sync and async APIs for finding IFCB data on the filesystem:
 
 import asyncio
 import os
+from datetime import timezone
 
 import aiofiles.os as aios
 import aiofiles.ospath as aiopath
 
-from .identifiers import add_target, parse_roi_id
+from .identifiers import add_target, parse_roi_id, bin_timestamp, bin_instrument_id
 
 
 DEFAULT_EXCLUDE = ['skip', 'beads']
@@ -92,6 +93,59 @@ def validate_path(
     return True
 
 
+# --- Fileset filtering: timestamp range / instrument ---
+
+def _normalize_filter_time(dt):
+    """Assume UTC for naive datetimes; leave aware datetimes untouched."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def make_fileset_filter(start_time=None, end_time=None, instrument=None):
+    """
+    Build a predicate ``(basename) -> bool`` for filtering filesets.
+
+    :param start_time: inclusive lower bound (datetime); naive treated as UTC
+    :param end_time: exclusive upper bound (datetime); naive treated as UTC
+    :param instrument: instrument ID (int) or iterable of instrument IDs
+    :returns: a predicate accepting a bin ID basename, or None if no filter is
+      active. Basenames that fail to parse are excluded when any filter is set.
+
+    The timestamp range is half-open ``[start_time, end_time)``.
+    """
+    if start_time is None and end_time is None and instrument is None:
+        return None
+
+    start = _normalize_filter_time(start_time)
+    end = _normalize_filter_time(end_time)
+
+    if instrument is None:
+        instruments = None
+    elif isinstance(instrument, int):
+        instruments = {instrument}
+    else:
+        instruments = set(instrument)
+
+    def _pred(basename):
+        try:
+            if instruments is not None and bin_instrument_id(basename) not in instruments:
+                return False
+            if start is not None or end is not None:
+                ts = bin_timestamp(basename)
+                if start is not None and ts < start:
+                    return False
+                if end is not None and ts >= end:
+                    return False
+        except ValueError:
+            return False
+        return True
+
+    return _pred
+
+
 # --- Internal helpers: directory entry splitting ---
 
 async def _async_split_dir_entries(dirpath, *, exclude=DEFAULT_EXCLUDE, sort=True, reverse=False):
@@ -146,6 +200,9 @@ async def async_list_filesets(
     validate=True,
     require_adc=True,
     require_roi=True,
+    start_time=None,
+    end_time=None,
+    instrument=None,
 ):
     """
     Async generator yielding (dp, basename) for each .hdr/.adc/(.roi) fileset found.
@@ -157,9 +214,14 @@ async def async_list_filesets(
     :param validate: whether to validate paths
     :param require_adc: require .adc file presence
     :param require_roi: require .roi file presence
+    :param start_time: inclusive lower bound on bin timestamp (datetime, UTC if naive)
+    :param end_time: exclusive upper bound on bin timestamp (datetime, UTC if naive)
+    :param instrument: instrument ID (int) or iterable of instrument IDs to keep
     """
     if not set(exclude).isdisjoint(set(include)):
         raise ValueError('include and exclude must be disjoint')
+
+    fs_filter = make_fileset_filter(start_time, end_time, instrument)
 
     stack = [dirpath]
     while stack:
@@ -182,6 +244,8 @@ async def async_list_filesets(
                         reldir = dp[len(dirpath) + 1:]
                     if not validate_path(os.path.join(reldir, basename), include=include, exclude=exclude):
                         continue
+                if fs_filter is not None and not fs_filter(basename):
+                    continue
                 yield dp, basename
 
 
@@ -193,6 +257,9 @@ def sync_list_filesets(
     validate=True,
     require_adc=True,
     require_roi=True,
+    start_time=None,
+    end_time=None,
+    instrument=None,
 ):
     """
     Sync generator yielding (dp, basename) for each .hdr/.adc/(.roi) fileset found.
@@ -204,9 +271,14 @@ def sync_list_filesets(
     :param validate: whether to validate paths
     :param require_adc: require .adc file presence
     :param require_roi: require .roi file presence
+    :param start_time: inclusive lower bound on bin timestamp (datetime, UTC if naive)
+    :param end_time: exclusive upper bound on bin timestamp (datetime, UTC if naive)
+    :param instrument: instrument ID (int) or iterable of instrument IDs to keep
     """
     if not set(exclude).isdisjoint(set(include)):
         raise ValueError('include and exclude must be disjoint')
+
+    fs_filter = make_fileset_filter(start_time, end_time, instrument)
 
     stack = [dirpath]
     while stack:
@@ -229,6 +301,8 @@ def sync_list_filesets(
                         reldir = dp[len(dirpath) + 1:]
                     if not validate_path(os.path.join(reldir, basename), include=include, exclude=exclude):
                         continue
+                if fs_filter is not None and not fs_filter(basename):
+                    continue
                 yield dp, basename
 
 
@@ -441,12 +515,18 @@ class SyncIfcbDataDirectory:
             'roi': fs + '.roi' if self.require_roi else None,
         }
 
-    def list(self):
-        """Yield dicts of {pid, hdr, adc, roi} for all filesets."""
+    def list(self, start_time=None, end_time=None, instrument=None):
+        """Yield dicts of {pid, hdr, adc, roi} for all filesets.
+
+        :param start_time: inclusive lower bound on bin timestamp (UTC if naive)
+        :param end_time: exclusive upper bound on bin timestamp (UTC if naive)
+        :param instrument: instrument ID (int) or iterable of instrument IDs
+        """
         for dp, bn in sync_list_filesets(
             self.root_path,
             exclude=self.exclude, include=self.include,
             require_adc=self.require_adc, require_roi=self.require_roi,
+            start_time=start_time, end_time=end_time, instrument=instrument,
         ):
             yield {
                 'pid': bn,
@@ -571,12 +651,18 @@ class AsyncIfcbDataDirectory:
             'roi': fs + '.roi' if self.require_roi else None,
         }
 
-    async def list(self):
-        """Async generator yielding dicts of {pid, hdr, adc, roi} for all filesets."""
+    async def list(self, start_time=None, end_time=None, instrument=None):
+        """Async generator yielding dicts of {pid, hdr, adc, roi} for all filesets.
+
+        :param start_time: inclusive lower bound on bin timestamp (UTC if naive)
+        :param end_time: exclusive upper bound on bin timestamp (UTC if naive)
+        :param instrument: instrument ID (int) or iterable of instrument IDs
+        """
         async for dp, bn in async_list_filesets(
             self.root_path,
             exclude=self.exclude, include=self.include,
             require_adc=self.require_adc, require_roi=self.require_roi,
+            start_time=start_time, end_time=end_time, instrument=instrument,
         ):
             adc = None
             if self.require_adc:
