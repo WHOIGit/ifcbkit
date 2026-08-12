@@ -44,7 +44,7 @@ class TestIStyleParsing:
         assert ts == datetime(2012, 1, 28, 8, 15, 15, tzinfo=timezone.utc)
 
     def test_day_dir(self):
-        assert bin_day_dir(self.BIN_ID) == 'D20120128'
+        assert bin_day_dir(self.BIN_ID) == 'IFCB5_2012_028'
 
     def test_year(self):
         assert bin_year(self.BIN_ID) == 2012
