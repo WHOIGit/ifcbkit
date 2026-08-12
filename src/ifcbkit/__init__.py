@@ -43,6 +43,7 @@ from .roi import (
 # Fileset discovery
 from .fileset import (
     validate_path,
+    make_fileset_filter,
     async_list_filesets,
     sync_list_filesets,
     async_list_data_dirs,

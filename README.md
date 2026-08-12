@@ -26,6 +26,17 @@ dd = SyncIfcbDataDirectory('/path/to/ifcb/data')
 for fileset in dd.list():
     print(fileset['pid'])  # e.g. 'D20221227T093138_IFCB127'
 
+# Filter the listing by timestamp range and/or instrument.
+# The range is half-open [start_time, end_time); naive datetimes are UTC.
+from datetime import datetime, timezone
+
+for fileset in dd.list(
+    start_time=datetime(2022, 12, 1, tzinfo=timezone.utc),
+    end_time=datetime(2023, 1, 1, tzinfo=timezone.utc),
+    instrument=127,           # int, or an iterable like [127, 130]
+):
+    print(fileset['pid'])
+
 # Check if a specific bin exists
 dd.exists('D20221227T093138_IFCB127')
 
