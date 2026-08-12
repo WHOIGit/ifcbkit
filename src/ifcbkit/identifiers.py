@@ -109,12 +109,20 @@ def bin_timestamp(bin_id: str) -> datetime:
 
 def bin_day_dir(bin_id: str) -> str:
     """
-    Get the day directory name for a bin ID (e.g., 'D20210101' for D-style).
+    Get the day directory name for a bin ID.
+
+    D-style bin IDs use a 'D{yyyymmdd}' day directory (e.g., 'D20210101').
+    I-style bin IDs use the bin ID prefix through the day of year
+    (e.g., 'IFCB1_2008_096' for 'IFCB1_2008_096_063425').
 
     :param bin_id: the bin ID string
-    :returns: day directory string in the form 'D{yyyymmdd}'
+    :returns: day directory string
     :raises ValueError: if the format is invalid
     """
+    if I_STYLE_PATTERN.match(bin_id):
+        # I-style day directories are named after the bin ID prefix,
+        # so preserve the original instrument ID formatting.
+        return bin_id.rsplit('_', 1)[0]
     ts = bin_timestamp(bin_id)
     return ts.strftime('D%Y%m%d')
 
