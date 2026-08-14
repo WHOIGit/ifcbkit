@@ -25,10 +25,13 @@ from .header import (
     parse_hdr,
     parse_hdr_file,
     parse_hdr_bytes,
+    parse_adc_file_format,
 )
 
 # ADC parsing
 from .adc import (
+    columns_for_bin_id,
+    columns_from_declaration,
     iter_adc_targets,
     targets_to_dict,
     parse_adc_bytes,
@@ -45,6 +48,9 @@ from .roi import (
 
 # Fileset discovery
 from .fileset import (
+    adcmod_path,
+    sync_resolve_adc_path,
+    async_resolve_adc_path,
     validate_path,
     make_fileset_filter,
     async_list_filesets,
@@ -100,6 +106,11 @@ from .stitching import (
     bin_images,
 )
 
+# Quality control. Reports whether data is intact — never whether it is good.
+# See ifcbkit.qc for the check catalogue and the ifcbkit-qc CLI.
+from . import qc
+from .qc import check_bin, check_collection, check_fileset, check_products
+
 # S3 and caching stores are NOT imported here — they require
 # amplify-storage-utils. Import them explicitly:
 #
@@ -107,4 +118,4 @@ from .stitching import (
 #   from ifcbkit.stores.caching import CachingBinStore, CachingRoiStore
 
 
-__version__ = '0.2.2'
+__version__ = '0.3.0'

@@ -6,7 +6,7 @@ from ifcbkit.adc import (
     parse_adc_bytes,
     parse_adc_file,
     parse_adc_line,
-    _columns_for_bin_id,
+    columns_for_bin_id,
     I_STYLE_COLUMNS,
     D_STYLE_COLUMNS,
 )
@@ -18,7 +18,7 @@ from tests.conftest import D_BIN_ID, I_BIN_ID
 
 class TestColumnMapping:
     def test_i_style_columns(self):
-        cols = _columns_for_bin_id('IFCB5_2012_028_081515')
+        cols = columns_for_bin_id('IFCB5_2012_028_081515')
         assert cols is I_STYLE_COLUMNS
         assert cols['x'] == 9
         assert cols['y'] == 10
@@ -27,7 +27,7 @@ class TestColumnMapping:
         assert cols['offset'] == 13
 
     def test_d_style_columns(self):
-        cols = _columns_for_bin_id('D20130526T095207_IFCB013')
+        cols = columns_for_bin_id('D20130526T095207_IFCB013')
         assert cols is D_STYLE_COLUMNS
         assert cols['x'] == 13
         assert cols['y'] == 14

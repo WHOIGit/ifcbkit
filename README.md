@@ -124,11 +124,86 @@ blob_file = sync_blob_path('/data/products', 'D20221227T093138_IFCB127')
 features_file = sync_features_path('/data/products', 'D20221227T093138_IFCB127')
 ```
 
+## Quality control
+
+`ifcbkit.qc` reports whether data is **intact** — present, parseable, internally consistent. It does not judge whether data is *good*: no `ml_analyzed`, no bead/blank detection, no trigger-rate or class-score plausibility. Those are analysis, not integrity.
+
+```python
+from ifcbkit.qc import check_bin, check_collection, Cost
+
+report = check_bin('/data/D20130526/D20130526T095207_IFCB013')
+report.ok            # False if anything of 'error' severity was found
+report.errors        # [Finding(code='missing_roi', ...), ...]
+report.to_jsonl()    # one JSON object per finding
+
+# The shape of a whole tree: incomplete filesets, duplicate PIDs, day-dir
+# mismatches, filesets a listing filter would silently drop.
+tree = check_collection('/data', adcmod_root='/adcmod')
+```
+
+Each finding carries a `code`, a `severity` fixed by the check registry, the `subject` it is about, a rendered `message`, and structured `detail`. Severities are `error` (unusable), `warning` (usable but something is off), and `info` (notable, not a defect). **The library states facts; the consumer sets policy** — an empty bin is reported `zero_rois` at `info` severity precisely because ifcbdb treats that as bad data and ifcb-ingest treats it as valid.
+
+Checks are grouped by how much I/O they need, so a scan can be as cheap as it needs to be:
+
+| `Cost` | Reads | Answers |
+|--------|-------|---------|
+| `stat` | names and `os.stat` | presence, sizes, identifiers, collection shape |
+| `parse` (default) | .hdr and .adc; stats the .roi | header and ADC integrity, **and every ADC↔ROI byte-range check** |
+| `full` | decodes ROI images, opens product containers | image decode failures, features/class/blob integrity |
+
+The ADC↔ROI consistency checks (`roi_offset_past_eof`, `roi_short_read`, `roi_overlapping_targets`, `roi_unaccounted_bytes`) need only the ADC offsets and the .roi file size, so they run at `parse`.
+
+ADC and header findings come from the optional `diagnostics` channel on `iter_adc_targets` and `parse_hdr` rather than from a second parser, so QC cannot disagree with the parse path consumers actually use:
+
+```python
+diagnostics = []
+targets = list(iter_adc_targets(bin_id, adc_bytes, diagnostics=diagnostics))
+# diagnostics: [{'line': 42, 'reason': 'zero_geometry', 'text': '...', 'n_fields': 24}, ...]
+```
+
+Every ADC line is accounted for exactly once — either as a yielded target or as one diagnostic. Passing no channel (the default) leaves behavior and output byte-identical.
+
+### Where products live
+
+Products are rarely stored next to the raw data, so nothing here assumes that. The default for a bin is its own directory; a real archive gives each product type a root of its own:
+
+```python
+report = check_bin(
+    '/data/raw/D20130526/D20130526T095207_IFCB013',
+    cost=Cost.FULL, expect=('features', 'class'),
+    product_dirs={
+        'features': '/data/features',   # /data/features/D20130526/..._fea_v2.csv
+        'class': '/data/class',         # /data/class/2013/D20130526/..._class.h5
+        'blobs': '/data/blobs',
+    })
+```
+
+Each root is searched by convention first — the root itself, then `<day_dir>/`, `<year>/<day_dir>/`, `<year>/` — and only falls back to a recursive walk if none of those hold the file. Pass `product_search=False` (`--no-product-search`) on a large archive to skip that fallback, at the cost of missing files in unconventional layouts. A product type with no root given is not searched at all, and `product_missing` names the directory it looked in. When several versions of a product are present, the highest version wins.
+
+### `ifcbkit-qc`
+
+```bash
+ifcbkit-qc /data/D20130526/D20130526T095207_IFCB013   # one bin
+ifcbkit-qc --cost stat /data                          # a whole tree
+ifcbkit-qc --json /data | jq -c 'select(.severity=="error")'
+
+ifcbkit-qc --list-checks          # every check, with severity and cost
+ifcbkit-qc --expect features,blobs /data/bin  # product_missing fires only for these
+ifcbkit-qc --ignore zero_rois --strict /data  # warnings also fail
+
+# products in their own trees (repeat --product-dir per type)
+ifcbkit-qc --cost full --expect features,class /data/raw \
+  --product-dir features=/data/features --product-dir class=/data/class
+ifcbkit-qc --products-root /data/products /data/raw   # one root for all types
+```
+
+Exit status is `0` for no errors, `1` when something of `error` severity was found (with `--strict`, also `warning`), and `2` if QC itself could not run.
+
 ## Dependencies
 
 **Required:** Python 3.10+, Pillow, aiofiles
 
-**Optional:** `amplify-storage-utils` (for S3/caching stores — install with `pip install -e ".[s3]"`)
+**Optional:** `amplify-storage-utils` (for S3/caching stores — install with `pip install -e ".[s3]"`); `h5py` (for class-score reading and the class-score QC checks — `pip install -e ".[hdf5]"`; without it those checks are reported in `Report.skipped` rather than failing)
 
 ---
 
@@ -179,4 +254,14 @@ images = extract_roi_images_from_targets(targets, roi_bytes)
 
 Some datasets (e.g. MVCO) keep corrected ADC files outside the raw data directory so the raw data stays untouched. These live in an `adcmod` directory that is strictly a sibling of the raw data root, laid out as `adcmod/<day>/<pid>.adc.mod`, where `<day>` is the name of the directory containing the raw fileset. The `.adc.mod` format is byte-compatible with `.adc`.
 
-`ifcbkit` resolves these transparently: when listing or fetching a fileset it uses the corrected ADC in place of the raw `.adc` if one exists. Only the ADC file is substituted — `.hdr` and `.roi` always come from the raw data directory — and a raw `.adc` must still be present for the bin to be discovered.
+`ifcbkit` resolves these transparently: when listing or fetching a fileset it uses the corrected ADC in place of the raw `.adc` if one exists. Only the ADC file is substituted — `.hdr` and `.roi` always come from the raw data directory — and a raw `.adc` must still be present for the bin to be discovered. `adcmod_path(fileset_dir, pid, root_path)` returns the path a correction would have.
+
+QC reports on corrections rather than silently preferring them: `adcmod_row_delta` and `adcmod_geometry_delta` are `info` (changing targets and geometry is what a correction is *for*), while `adcmod_invalid` is an error and `adcmod_orphan` — a correction with no raw fileset — is a warning.
+
+```python
+report = check_bin('/data/D20130526/D20130526T095207_IFCB013', root_path='/data')
+```
+
+## Note: parse failures are reported, not raised
+
+`parse_hdr` no longer raises when a header value fails its schema cast, and no longer raises `IndexError` on a header truncated after its banner line. The raw value is kept, the failure is recorded on the `diagnostics` channel, and QC reports it as `hdr_cast_failure` or `hdr_truncated`. One bad field does not cost you the rest of the header. Well-formed headers parse exactly as before.
