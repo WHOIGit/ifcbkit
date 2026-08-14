@@ -29,6 +29,8 @@ from .header import (
 
 # ADC parsing
 from .adc import (
+    iter_adc_targets,
+    targets_to_dict,
     parse_adc_bytes,
     parse_adc_file,
     parse_adc_line,
@@ -37,6 +39,7 @@ from .adc import (
 # ROI reading
 from .roi import (
     extract_roi_images,
+    extract_roi_images_from_targets,
     extract_roi_image,
 )
 
@@ -104,4 +107,4 @@ from .stitching import (
 #   from ifcbkit.stores.caching import CachingBinStore, CachingRoiStore
 
 
-__version__ = '0.1.0'
+__version__ = '0.2.2'

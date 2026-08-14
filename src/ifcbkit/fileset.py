@@ -15,7 +15,7 @@ from datetime import timezone
 import aiofiles.os as aios
 import aiofiles.ospath as aiopath
 
-from .identifiers import add_target, parse_roi_id, bin_timestamp, bin_instrument_id
+from .identifiers import parse_roi_id, bin_timestamp, bin_instrument_id
 
 
 DEFAULT_EXCLUDE = ['skip', 'beads']
@@ -543,30 +543,10 @@ class SyncIfcbDataDirectory:
 
     def list_images(self, pid):
         """List ROI image metadata from the .adc file for the given PID."""
-        from .adc import _columns_for_bin_id
+        from .adc import parse_adc_bytes
         paths = self.paths(pid)
-        adc_path = paths.get('adc')
-        cols = _columns_for_bin_id(pid)
-        x_col, y_col = cols['x'], cols['y']
-        w_col, h_col = cols['width'], cols['height']
-        images = {}
-        with open(adc_path, 'r') as adc_file:
-            for i, line in enumerate(adc_file):
-                fields = line.strip().split(',')
-                x = int(fields[x_col])
-                y = int(fields[y_col])
-                width = int(fields[w_col])
-                height = int(fields[h_col])
-                if width == 0 or height == 0:
-                    continue
-                images[i + 1] = {
-                    'roi_id': add_target(pid, i + 1),
-                    'x': x,
-                    'y': y,
-                    'width': width,
-                    'height': height,
-                }
-        return images
+        with open(paths['adc'], 'rb') as adc_file:
+            return parse_adc_bytes(pid, adc_file.read())
 
     def read_images(self, pid, rois=None):
         """Read ROI images as PIL Images, with auto-stitching for I-style bins.
@@ -683,31 +663,11 @@ class AsyncIfcbDataDirectory:
     async def list_images(self, pid):
         """List ROI image metadata from the .adc file for the given PID."""
         import aiofiles
-        from .adc import _columns_for_bin_id
+        from .adc import parse_adc_bytes
         paths = await self.paths(pid)
-        adc_path = paths.get('adc')
-        cols = _columns_for_bin_id(pid)
-        x_col, y_col = cols['x'], cols['y']
-        w_col, h_col = cols['width'], cols['height']
-        images = {}
-        async with aiofiles.open(adc_path, 'r') as adc_file:
-            adc_text = await adc_file.read()
-            for i, line in enumerate(adc_text.splitlines()):
-                fields = line.strip().split(',')
-                x = int(fields[x_col])
-                y = int(fields[y_col])
-                width = int(fields[w_col])
-                height = int(fields[h_col])
-                if width == 0 or height == 0:
-                    continue
-                images[i + 1] = {
-                    'roi_id': add_target(pid, i + 1),
-                    'x': x,
-                    'y': y,
-                    'width': width,
-                    'height': height,
-                }
-        return images
+        async with aiofiles.open(paths['adc'], 'rb') as adc_file:
+            adc_bytes = await adc_file.read()
+        return parse_adc_bytes(pid, adc_bytes)
 
     async def images_exist(self, pid, roi_ids):
         """Check if the specified ROI IDs exist in the fileset."""

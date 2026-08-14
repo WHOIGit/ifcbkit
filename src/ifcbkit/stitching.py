@@ -222,15 +222,18 @@ def bin_images(bin_id: str, adc_bytes: bytes, roi_bytes: bytes, *,
     This is the single integration point for stitching. All higher-level
     image-reading APIs delegate here.
 
+    The ADC is parsed once and the records are shared with ROI extraction.
+
     :param bin_id: the bin ID string
     :param adc_bytes: raw bytes of the .adc file
     :param roi_bytes: raw bytes of the .roi file
     :param stitch: if True (default), auto-stitch I-style overlapping pairs
     :returns: BinImages mapping of {target_number: PIL.Image}
     """
-    from .adc import parse_adc_bytes
-    from .roi import extract_roi_images
+    from .adc import iter_adc_targets, targets_to_dict
+    from .roi import extract_roi_images_from_targets
 
-    adc = parse_adc_bytes(bin_id, adc_bytes, extended=True)
-    images = extract_roi_images(bin_id, adc_bytes, roi_bytes)
+    targets = list(iter_adc_targets(bin_id, adc_bytes))
+    adc = targets_to_dict(targets, extended=True)
+    images = extract_roi_images_from_targets(targets, roi_bytes)
     return BinImages(bin_id, adc, images, stitch=stitch)

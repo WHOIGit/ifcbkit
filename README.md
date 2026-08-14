@@ -162,6 +162,19 @@ adc = parse_adc_file(bin_id, '/path/to/bin.adc', extended=True)
 
 Low-level stitching functions (`detect_pairs`, `stitch_pair`, `infill_stitched_image`) and raw extraction utilities (`extract_roi_images`, `extract_roi_image`) are available for specialized use cases.
 
+### The single ADC parse path
+
+`iter_adc_targets` is the one place ifcbkit parses ADC lines. It yields a full record per usable ROI — `target`, `roi_id`, `trigger`, `x`, `y`, `width`, `height`, `offset` — and everything else that reads ADC data is a projection or filter of it. A target is usable only if all of those columns parse and the ROI has non-zero area, so ADC parsing and ROI extraction always agree on which targets exist.
+
+Use it directly to avoid parsing the ADC twice when you need both metadata and images:
+
+```python
+from ifcbkit import iter_adc_targets, extract_roi_images_from_targets
+
+targets = list(iter_adc_targets(bin_id, adc_bytes))
+images = extract_roi_images_from_targets(targets, roi_bytes)
+```
+
 ## Note: corrected ADC files (`adcmod`)
 
 Some datasets (e.g. MVCO) keep corrected ADC files outside the raw data directory so the raw data stays untouched. These live in an `adcmod` directory that is strictly a sibling of the raw data root, laid out as `adcmod/<day>/<pid>.adc.mod`, where `<day>` is the name of the directory containing the raw fileset. The `.adc.mod` format is byte-compatible with `.adc`.
