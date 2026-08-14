@@ -100,6 +100,21 @@ def iter_adc_targets(bin_id: str, adc_bytes: bytes) -> Iterator[dict]:
             yield record
 
 
+def targets_to_dict(targets, *, extended: bool = False) -> dict:
+    """Convert target records into the metadata dict shape.
+
+    The companion to :func:`iter_adc_targets`: use it when you already have
+    the target records and also need the dict that :func:`parse_adc_bytes`
+    returns, instead of parsing the ADC a second time.
+
+    :param targets: iterable of records from :func:`iter_adc_targets`
+    :param extended: if True, include trigger and offset in output
+    :returns: dict of {target_number: {roi_id, x, y, width, height, ...}}
+    """
+    keys = _EXTENDED_KEYS if extended else _PLAIN_KEYS
+    return {record['target']: _project(record, keys) for record in targets}
+
+
 def parse_adc_bytes(bin_id: str, adc_bytes: bytes, *, extended: bool = False) -> dict:
     """Parse .adc CSV bytes into ROI metadata dict.
 
@@ -114,11 +129,8 @@ def parse_adc_bytes(bin_id: str, adc_bytes: bytes, *, extended: bool = False) ->
     :param extended: if True, include trigger and offset in output
     :returns: dict of {target_number: {roi_id, x, y, width, height, ...}}
     """
-    keys = _EXTENDED_KEYS if extended else _PLAIN_KEYS
-    return {
-        record['target']: _project(record, keys)
-        for record in iter_adc_targets(bin_id, adc_bytes)
-    }
+    return targets_to_dict(
+        iter_adc_targets(bin_id, adc_bytes), extended=extended)
 
 
 def parse_adc_file(bin_id: str, adc_path: str, *, extended: bool = False) -> dict:

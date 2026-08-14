@@ -230,10 +230,10 @@ def bin_images(bin_id: str, adc_bytes: bytes, roi_bytes: bytes, *,
     :param stitch: if True (default), auto-stitch I-style overlapping pairs
     :returns: BinImages mapping of {target_number: PIL.Image}
     """
-    from .adc import iter_adc_targets, _project, _EXTENDED_KEYS
+    from .adc import iter_adc_targets, targets_to_dict
     from .roi import extract_roi_images_from_targets
 
     targets = list(iter_adc_targets(bin_id, adc_bytes))
-    adc = {t['target']: _project(t, _EXTENDED_KEYS) for t in targets}
+    adc = targets_to_dict(targets, extended=True)
     images = extract_roi_images_from_targets(targets, roi_bytes)
     return BinImages(bin_id, adc, images, stitch=stitch)

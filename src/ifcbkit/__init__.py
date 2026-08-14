@@ -30,6 +30,7 @@ from .header import (
 # ADC parsing
 from .adc import (
     iter_adc_targets,
+    targets_to_dict,
     parse_adc_bytes,
     parse_adc_file,
     parse_adc_line,
