@@ -33,12 +33,27 @@ def detail_for(report, code):
 
 # --- ADC group ---
 
-def test_zero_geometry_is_aggregated_info(tmp_path):
+def test_zero_geometry_is_opt_in(tmp_path):
+    """Nearly every real bin has ROI-less triggers, so this stays quiet.
+
+    A default-on check that fires on every bin ever collected is noise that
+    buries the findings that matter.
+    """
     basepath = copy_fileset(tmp_path)
     report = check_fileset(basepath, cost=Cost.PARSE)
+    assert 'adc_zero_geometry' not in codes(report)
+    # Quiet, but accounted for: unrequested is not the same as passed.
+    assert 'adc_zero_geometry' in report.skipped
+
+
+def test_zero_geometry_is_aggregated_info_when_enabled(tmp_path):
+    basepath = copy_fileset(tmp_path)
+    report = check_fileset(
+        basepath, cost=Cost.PARSE, enable=('adc_zero_geometry',))
     zero = next(f for f in report.findings if f.code == 'adc_zero_geometry')
     assert zero.severity is Severity.INFO
     assert zero.detail['count'] == D_LINES - D_TARGETS
+    assert 'adc_zero_geometry' not in report.skipped
 
 
 def test_adc_empty(tmp_path):

@@ -144,6 +144,14 @@ tree = check_collection('/data', adcmod_root='/adcmod')
 
 Each finding carries a `code`, a `severity` fixed by the check registry, the `subject` it is about, a rendered `message`, and structured `detail`. Severities are `error` (unusable), `warning` (usable but something is off), and `info` (notable, not a defect). **The library states facts; the consumer sets policy** — an empty bin is reported `zero_rois` at `info` severity precisely because ifcbdb treats that as bad data and ifcb-ingest treats it as valid.
 
+A few checks are **opt-in**: they state something true of nearly every bin, or encode one site's layout convention as a rule, so leaving them on would bury the findings that matter. `adc_zero_geometry` is the clearest case — most triggers in a real bin record no ROI, so it fires on essentially every bin ever collected. Ask for them by code, or `'all'`:
+
+```python
+report = check_bin(basepath, enable=('adc_zero_geometry',))
+```
+
+An opt-in check that was not requested lands in `report.skipped`, so a report never implies it passed. `ifcbkit-qc --list-checks` marks them `[opt-in]`.
+
 Checks are grouped by how much I/O they need, so a scan can be as cheap as it needs to be:
 
 | `Cost` | Reads | Answers |
@@ -188,9 +196,11 @@ ifcbkit-qc /data/D20130526/D20130526T095207_IFCB013   # one bin
 ifcbkit-qc --cost stat /data                          # a whole tree
 ifcbkit-qc --json /data | jq -c 'select(.severity=="error")'
 
+ifcbkit-qc -q /data               # only subjects with something to report
 ifcbkit-qc --list-checks          # every check, with severity and cost
 ifcbkit-qc --expect features,blobs /data/bin  # product_missing fires only for these
 ifcbkit-qc --ignore zero_rois --strict /data  # warnings also fail
+ifcbkit-qc --enable adc_zero_geometry /data   # opt-in checks, by code or "all"
 
 # products in their own trees (repeat --product-dir per type)
 ifcbkit-qc --cost full --expect features,class /data/raw \
@@ -198,17 +208,60 @@ ifcbkit-qc --cost full --expect features,class /data/raw \
 ifcbkit-qc --products-root /data/products /data/raw   # one root for all types
 ```
 
-`--json` emits two kinds of record, each tagged with `type`:
+### Data still arriving
+
+ROI telemetry can lag the `.hdr` and `.adc` by hours, so a live directory routinely holds bins whose image data has not landed yet. `--roi-optional` (`roi_optional=True`) says so: an absent `.roi` stops being an error, and a fileset whose *only* absent file is the `.roi` is no longer reported incomplete. A fileset missing its `.hdr` or `.adc` still is — a distinction `--ignore fileset_incomplete` cannot make, since that would silence genuinely truncated filesets too.
 
 ```bash
-# findings only — a filter on a finding field passes over the envelopes
-ifcbkit-qc --json /data | jq -c 'select(.severity=="error")'
-
-# subjects where a check could not be evaluated at all
-ifcbkit-qc --json /data | jq -c 'select(.type=="report" and (.skipped|length>0))'
+ifcbkit-qc --roi-optional /data/today
 ```
 
-Every subject gets a `report` record, including one with nothing wrong, and that record carries `skipped` (checks that could not be evaluated) and `truncated` (findings counted but not listed). Without it a findings-only stream reports a skipped check and a passed check identically, and cannot distinguish a clean bin from a bin nobody looked at — for an integrity tool, silence must never be readable as health. `h5py` being absent is the ordinary way this happens: the class-score checks land in `skipped`, and nothing about the class file is actually known.
+The absence is still accounted for, as a skip rather than a finding, because the ADC↔ROI byte-range checks could not run and the report must not imply they passed:
+
+```
+D20220124T201049_IFCB127: no findings
+  skipped  missing_roi    the .roi file has not arrived (roi_optional); the ADC-to-ROI checks could not run
+```
+
+That also means such bins stay visible under `-q`. To drop them entirely once you have accepted them, add `--ignore missing_roi`.
+
+Scanning an archive, `-q` / `--quiet` drops the subjects with nothing to say, leaving the problems and a count of what was checked:
+
+```
+$ ifcbkit-qc -q /data
+/data: 1 error
+  error    fileset_incomplete    D20130526T125207_IFCB013 has .adc, .hdr but is missing .roi.
+D20130526T125207_IFCB013: 1 error
+  error    missing_roi           The .roi file is absent.
+5 subject(s) checked, 2 with errors (3 with nothing to report, not shown)
+not run for any subject: adc_zero_geometry, mixed_instruments (not requested (opt-in check))
+```
+
+A subject whose check was *skipped* or *truncated* is still shown under `-q`: not knowing something is not the same as finding nothing wrong. The summary line always says how many subjects were checked, so hiding the clean ones never hides that they were examined.
+
+`--json` emits three kinds of record, each tagged with `type`:
+
+```
+{"type":"run","cost":"parse","n_subjects":3,"skipped":{"adc_zero_geometry":"not requested (opt-in check)"}}
+{"type":"report","subject":"D20220124T201049_IFCB127","cost":"parse","n_findings":0,"n_errors":0}
+{"type":"report","subject":"D20220124T203435_IFCB127","cost":"parse","n_findings":1,"n_errors":1}
+{"type":"finding","code":"missing_roi","severity":"error","subject":"D20220124T203435_IFCB127",...}
+```
+
+Every subject gets a `report` record, including one with nothing wrong, so a clean bin leaves proof it was examined rather than looking indistinguishable from a bin nobody opened. A subject's record carries `skipped` (checks that could not be evaluated on *it*) and `truncated` (findings counted but not listed), both omitted when empty — a findings-only stream would report a skipped check and a passed check identically, which for an integrity tool means silence reads as health.
+
+Anything constant across the invocation goes in the single leading `run` record instead of on every subject: on a real archive, repeating it per bin is thousands of identical lines, which is its own way of hiding a finding. Which opt-in checks went unrequested is the usual case.
+
+```bash
+# findings only — a filter on a finding field passes over the other records
+ifcbkit-qc --json /data | jq -c 'select(.severity=="error")'
+
+# bins where a check could not be evaluated (h5py absent, say)
+ifcbkit-qc --json /data | jq -c 'select(.type=="report" and (.skipped|length>0))'
+
+# confirm the sweep covered what you expected
+ifcbkit-qc --json /data | jq -c 'select(.type=="run")'
+```
 
 Exit status is `0` for no errors, `1` when something of `error` severity was found (with `--strict`, also `warning`), and `2` if QC itself could not run.
 

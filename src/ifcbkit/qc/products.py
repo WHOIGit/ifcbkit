@@ -30,7 +30,8 @@ from PIL import Image
 from ..identifiers import bin_day_dir, bin_year, parse_roi_id
 from ..products import sync_list_product_files
 from .model import Cost, Report, cost_allows
-from .registry import finding
+from .registry import PRODUCTS as PRODUCTS_GROUP
+from .registry import finding, note_opt_in_skips, resolve_opt_ins
 
 FEATURES = 'features'
 CLASS = 'class'
@@ -398,7 +399,7 @@ def _check_blob_names(names, bin_id, subject, path, report) -> tuple[set, set]:
 
 def check_products(directory, bin_id: str, *, cost=Cost.FULL, expect=(),
                    targets=None, report=None, product_dirs=None,
-                   search: bool = True) -> Report:
+                   search: bool = True, enable=()) -> Report:
     """Check a bin's derived products for integrity.
 
     Products usually live outside the raw data tree, one root per product type.
@@ -417,10 +418,14 @@ def check_products(directory, bin_id: str, *, cost=Cost.FULL, expect=(),
     :param product_dirs: ``{product: directory}``, a root per product type
     :param search: fall back to a recursive walk of a root; see
       :func:`find_products`
+    :param enable: opt-in check codes to run, or ``'all'``; see
+      :data:`ifcbkit.qc.registry.OPT_IN_CHECKS`
     :returns: the :class:`Report`
     """
     cost = Cost(cost)
+    enabled = resolve_opt_ins(enable)
     report = report if report is not None else Report(subject=bin_id, cost=cost)
+    note_opt_in_skips(report, (PRODUCTS_GROUP,), enabled)
 
     found = find_products(
         directory, bin_id, product_dirs=product_dirs, search=search)

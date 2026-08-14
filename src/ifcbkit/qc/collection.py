@@ -27,7 +27,8 @@ from ..fileset import (
 )
 from ..identifiers import bin_day_dir, bin_instrument_id, bin_timestamp
 from .model import Cost, Report
-from .registry import finding
+from .raw import ROI_EXT
+from .registry import COLLECTION, finding, note_opt_in_skips, resolve_opt_ins
 
 REQUIRED_EXTENSIONS = ('hdr', 'adc', 'roi')
 
@@ -94,10 +95,18 @@ def walk_filesets(root, *, exclude=DEFAULT_EXCLUDE, include=DEFAULT_INCLUDE,
             report.add(finding('empty_day_dir', root, path=directory))
 
 
-def _check_completeness(root, filesets, report) -> None:
-    """Report filesets with some but not all of .hdr/.adc/.roi."""
+def _check_completeness(root, filesets, report, roi_optional=False) -> None:
+    """Report filesets with some but not all of .hdr/.adc/.roi.
+
+    With ``roi_optional``, a fileset whose *only* absent file is the .roi is not
+    incomplete — that is a bin whose image data has not arrived yet. One still
+    missing its .hdr or .adc is reported either way, which is the distinction
+    ``--ignore fileset_incomplete`` could not make.
+    """
+    optional = (ROI_EXT,) if roi_optional else ()
     for directory, bin_id, extensions in filesets:
-        missing = [ext for ext in REQUIRED_EXTENSIONS if ext not in extensions]
+        missing = [ext for ext in REQUIRED_EXTENSIONS
+                   if ext not in extensions and ext not in optional]
         if missing:
             report.add(finding(
                 'fileset_incomplete', root,
@@ -206,7 +215,7 @@ def _check_adcmod_orphans(root, filesets, adcmod_root, report) -> None:
 
 def check_collection(root, *, cost=Cost.STAT, exclude=DEFAULT_EXCLUDE,
                      include=DEFAULT_INCLUDE, start_time=None, end_time=None,
-                     instrument=None, mixed_instruments=False,
+                     instrument=None, enable=(), roi_optional=False,
                      adcmod_root=None) -> Report:
     """Check the shape of a raw data collection.
 
@@ -220,27 +229,30 @@ def check_collection(root, *, cost=Cost.STAT, exclude=DEFAULT_EXCLUDE,
     :param start_time: lower bound a listing filter would apply
     :param end_time: upper bound a listing filter would apply
     :param instrument: instrument filter a listing would apply
-    :param mixed_instruments: run the opt-in ``mixed_instruments`` check
+    :param enable: opt-in check codes to run, or ``'all'``; see
+      :data:`ifcbkit.qc.registry.OPT_IN_CHECKS`
+    :param roi_optional: do not call a fileset incomplete when the .roi is its
+      only absent file; see :func:`ifcbkit.qc.raw.check_fileset`
     :param adcmod_root: the adcmod tree to check for orphaned corrections
     :returns: a :class:`Report` whose subject is the root path
     """
     root = os.path.normpath(str(root))
+    enabled = resolve_opt_ins(enable)
     report = Report(subject=root, cost=Cost(cost))
+    note_opt_in_skips(report, (COLLECTION,), enabled)
 
     filesets = list(walk_filesets(
         root, exclude=exclude, include=include, report=report))
 
-    _check_completeness(root, filesets, report)
+    _check_completeness(root, filesets, report, roi_optional)
     _check_duplicates(root, filesets, report)
     _check_day_dirs(root, filesets, report)
     _check_filter_drops(
         root, filesets, report, start_time=start_time, end_time=end_time,
         instrument=instrument)
     _check_missing_days(root, filesets, report)
-    if mixed_instruments:
+    if 'mixed_instruments' in enabled:
         _check_instruments(root, filesets, report)
-    else:
-        report.skipped['mixed_instruments'] = 'not requested (opt-in check)'
     if adcmod_root is not None and os.path.isdir(str(adcmod_root)):
         _check_adcmod_orphans(root, filesets, adcmod_root, report)
 

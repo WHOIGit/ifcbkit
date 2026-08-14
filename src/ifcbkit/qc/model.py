@@ -232,7 +232,7 @@ class Report:
              if keep(code)})
         return copy
 
-    def envelope(self) -> dict:
+    def envelope(self, *, omit_skipped=()) -> dict:
         """Return the per-report metadata record for :meth:`to_jsonl`.
 
         A findings-only stream cannot say that a subject was checked and found
@@ -240,18 +240,30 @@ class Report:
         Both read as health — the one direction an integrity report must never
         fail in — so this record carries them, along with the truncation counts
         that would otherwise make a badly damaged bin look mildly damaged.
+
+        ``skipped`` and ``truncated`` are present only when non-empty, so the
+        record for a clean subject stays short enough to scan a sweep of them.
+
+        :param omit_skipped: codes to leave out of ``skipped`` because the
+          caller reports them once for a whole run instead of per subject; see
+          :func:`ifcbkit.qc.cli` for why that matters over many subjects
         """
-        return {
+        skipped = {code: reason for code, reason in self.skipped.items()
+                   if code not in omit_skipped}
+        record = {
             'type': 'report',
             'subject': self.subject,
             'cost': self.cost.value,
             'n_findings': len(self.findings),
             'n_errors': len(self.errors),
-            'skipped': dict(self.skipped),
-            'truncated': dict(self.truncated),
         }
+        if skipped:
+            record['skipped'] = skipped
+        if self.truncated:
+            record['truncated'] = dict(self.truncated)
+        return record
 
-    def to_jsonl(self) -> str:
+    def to_jsonl(self, *, omit_skipped=()) -> str:
         """Return the whole report as JSON Lines.
 
         The first line is :meth:`envelope` (``type`` of ``report``), followed
@@ -262,8 +274,11 @@ class Report:
 
         Serializing only the findings would drop three of the five things a
         report knows — see :meth:`envelope`.
+
+        :param omit_skipped: passed through to :meth:`envelope`
         """
-        lines = [json.dumps(self.envelope(), sort_keys=True)]
+        lines = [json.dumps(self.envelope(omit_skipped=omit_skipped),
+                            sort_keys=True)]
         lines.extend(
             json.dumps({'type': 'finding', **finding.to_dict()}, sort_keys=True)
             for finding in self.findings)

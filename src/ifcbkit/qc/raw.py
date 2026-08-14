@@ -23,7 +23,20 @@ from .. import roi as roi_mod
 from ..fileset import adcmod_path
 from ..identifiers import bin_instrument_id, bin_timestamp, parse_bin_id
 from .model import Cost, Report, cost_allows
-from .registry import finding
+from .registry import (
+    ADC,
+    ADCMOD,
+    HEADER,
+    IDENTIFIERS,
+    PRESENCE,
+    ROI,
+    finding,
+    note_opt_in_skips,
+    resolve_opt_ins,
+)
+
+# The catalogue groups check_fileset is responsible for.
+RAW_GROUPS = (PRESENCE, IDENTIFIERS, HEADER, ADC, ROI, ADCMOD)
 
 # A fileset smaller than this cannot hold usable data. Ports ifcbdb's MIN_SIZE.
 MIN_FILESET_BYTES = 32
@@ -58,6 +71,14 @@ HDR_SAMPLE_TIME_KEY = 'sampleTime'
 SAMPLE_TIME_TOLERANCE_SECONDS = 2
 
 EXTENSIONS = ('hdr', 'adc', 'roi')
+ROI_EXT = 'roi'
+
+# Why an absent .roi was not reported as missing. ROI telemetry can lag the
+# .hdr and .adc by hours, so a bin that has not received its image data yet is
+# incomplete on purpose — but the ADC-to-ROI checks still could not run, and a
+# report must not imply they passed.
+ROI_OPTIONAL_REASON = ('the .roi file has not arrived (roi_optional); the '
+                       'ADC-to-ROI checks could not run')
 
 # header.py reason -> check code, for the header diagnostics channel. The ADC
 # reasons need per-reason detail, so they are mapped in _report_adc_diagnostics.
@@ -110,9 +131,11 @@ def resolve_fileset(path, bin_id: str | None = None) -> FilesetPaths:
     )
 
 
-def _sizes(paths: FilesetPaths, report: Report) -> dict:
+def _sizes(paths: FilesetPaths, report: Report, roi_optional=False) -> dict:
     """Stat all three files, reporting what is missing or unreadable.
 
+    :param roi_optional: treat an absent .roi as expected rather than an error;
+      see :func:`check_fileset`
     :returns: ``{ext: size_in_bytes or None}``
     """
     sizes = {}
@@ -122,6 +145,11 @@ def _sizes(paths: FilesetPaths, report: Report) -> dict:
             sizes[ext] = os.path.getsize(path)
         except FileNotFoundError:
             sizes[ext] = None
+            if ext == ROI_EXT and roi_optional:
+                # Not an error, but not verified either: say so, so that a bin
+                # still awaiting its ROI data cannot read as fully checked.
+                report.skipped['missing_roi'] = ROI_OPTIONAL_REASON
+                continue
             report.add(finding(f'missing_{ext}', paths.bin_id, path=path))
         except OSError as e:
             sizes[ext] = None
@@ -288,8 +316,13 @@ def _style_of(bin_id: str) -> str:
     return 'I' if bin_id.startswith('I') else 'D'
 
 
-def _report_adc_diagnostics(paths, diagnostics, cols, report) -> None:
-    """Turn ADC skip diagnostics into findings, aggregating zero-geometry."""
+def _report_adc_diagnostics(paths, diagnostics, cols, report, enabled) -> None:
+    """Turn ADC skip diagnostics into findings, aggregating zero-geometry.
+
+    Zero-geometry triggers are counted whether or not anyone asked for them —
+    the count is free — but only reported when ``adc_zero_geometry`` is
+    enabled, because nearly every real bin has many of them.
+    """
     style = _style_of(paths.bin_id)
     required = max(cols.values()) + 1
     zero_geometry = 0
@@ -311,7 +344,7 @@ def _report_adc_diagnostics(paths, diagnostics, cols, report) -> None:
                 'adc_unparseable_line', paths.bin_id, path=paths.adc,
                 line=entry['line'], text=entry['text'][:MAX_QUOTED_CHARS]))
 
-    if zero_geometry:
+    if zero_geometry and 'adc_zero_geometry' in enabled:
         report.add(finding(
             'adc_zero_geometry', paths.bin_id, path=paths.adc,
             count=zero_geometry))
@@ -482,7 +515,7 @@ def _check_roi_decode(paths, targets, report) -> None:
                 target=record['target'], error=f'{type(e).__name__}: {e}'))
 
 
-def _check_adc(paths, sizes, props, report, cost) -> list:
+def _check_adc(paths, sizes, props, report, cost, enabled) -> list:
     """Run the ADC and ADC↔ROI groups.
 
     :returns: the parsed target records (empty if the ADC could not be read)
@@ -515,7 +548,7 @@ def _check_adc(paths, sizes, props, report, cost) -> list:
     targets = list(adc_mod.iter_adc_targets(
         paths.bin_id, adc_bytes, diagnostics=diagnostics))
 
-    _report_adc_diagnostics(paths, diagnostics, cols, report)
+    _report_adc_diagnostics(paths, diagnostics, cols, report, enabled)
     _check_adc_layout(paths, diagnostics, cols, props, n_lines, report)
     _check_targets(paths, targets, report)
 
@@ -601,7 +634,8 @@ def _check_adcmod(paths, sizes, mod_path, raw_targets, report) -> list | None:
 
 
 def check_fileset(path, *, bin_id=None, cost=Cost.PARSE,
-                  root_path=None, adcmod=None, targets_out=None) -> Report:
+                  root_path=None, adcmod=None, targets_out=None,
+                  enable=(), roi_optional=False) -> Report:
     """Check one raw fileset for integrity.
 
     :param path: basepath, a .hdr/.adc/.roi path, or a bin-named directory
@@ -610,6 +644,14 @@ def check_fileset(path, *, bin_id=None, cost=Cost.PARSE,
     :param root_path: the raw data root, if corrected ADC files should be
       checked; the ``adcmod`` tree is its sibling
     :param adcmod: an explicit .adc.mod path, instead of deriving one
+    :param enable: opt-in check codes to run, or ``'all'``; see
+      :data:`ifcbkit.qc.registry.OPT_IN_CHECKS`. Ones left off are recorded in
+      :attr:`Report.skipped`, never passed over in silence
+    :param roi_optional: treat an absent .roi as expected instead of an error.
+      ROI telemetry can lag the .hdr and .adc, so a dataset mid-transfer has
+      bins that are incomplete on purpose. ``missing_roi`` then lands in
+      :attr:`Report.skipped` rather than being emitted, because the ADC-to-ROI
+      checks genuinely could not run
     :param targets_out: optional list; the bin's *effective* target records are
       appended to it, so a caller that also needs them (product coverage
       checks) does not have to parse the ADC a second time. Effective means
@@ -620,17 +662,19 @@ def check_fileset(path, *, bin_id=None, cost=Cost.PARSE,
     :returns: a :class:`Report` for this bin
     """
     cost = Cost(cost)
+    enabled = resolve_opt_ins(enable)
     paths = resolve_fileset(path, bin_id)
     report = Report(subject=paths.bin_id, cost=cost)
+    note_opt_in_skips(report, RAW_GROUPS, enabled)
 
-    sizes = _sizes(paths, report)
+    sizes = _sizes(paths, report, roi_optional)
     _check_sizes(paths, sizes, report)
     parsed_id = _check_identifiers(paths, report)
     mod_path = _resolve_adcmod(paths, root_path, adcmod)
 
     if cost_allows(cost, Cost.PARSE):
         props = _check_header(paths, parsed_id, report)
-        targets = _check_adc(paths, sizes, props, report, cost)
+        targets = _check_adc(paths, sizes, props, report, cost, enabled)
         effective = targets
         if mod_path is not None:
             mod_targets = _check_adcmod(

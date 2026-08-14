@@ -133,6 +133,24 @@ def test_to_jsonl_carries_skips_and_truncation():
     assert envelope['truncated'] == {'adc_blank_line': 3}
 
 
+def test_envelope_omits_empty_containers_and_hoisted_skips():
+    """A clean subject's record carries only what is true of that subject."""
+    report = Report(subject=BIN_ID, cost=Cost.PARSE)
+    report.skipped['adc_zero_geometry'] = 'not requested (opt-in check)'
+    report.skipped['class_bad_values'] = 'h5py is not installed'
+
+    assert 'truncated' not in report.envelope()
+
+    # The caller reports the opt-in skip once for the whole run, so it is not
+    # repeated here; the subject-specific one stays.
+    trimmed = report.envelope(omit_skipped={'adc_zero_geometry'})
+    assert trimmed['skipped'] == {'class_bad_values': 'h5py is not installed'}
+
+    both = report.envelope(
+        omit_skipped={'adc_zero_geometry', 'class_bad_values'})
+    assert 'skipped' not in both
+
+
 def test_to_jsonl_records_a_subject_with_no_findings():
     """A clean subject must still leave a trace: checked is not the same as
     never looked at."""

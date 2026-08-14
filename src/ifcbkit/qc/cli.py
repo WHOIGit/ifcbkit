@@ -5,11 +5,19 @@ Takes bins or whole data trees, prints a grouped summary (or JSON Lines with
 ``--json``), and exits non-zero when something is wrong so it can be used in a
 pipeline.
 
-``--json`` emits both kinds of record the human output shows: a ``report``
-record per subject — including subjects with nothing wrong — carrying the
-checks that were skipped and the findings that were truncated, then a
-``finding`` record each. A findings-only stream would report a skipped check
-and a passed check identically, which is the failure this avoids.
+``--json`` emits three kinds of record, each tagged with ``type``:
+
+- one ``run`` record, first, holding what is true of the whole invocation —
+  the cost budget, the subject count, and the opt-in checks nobody asked for
+- one ``report`` record per subject, including subjects with nothing wrong, so
+  a clean bin still leaves proof it was examined
+- one ``finding`` record per finding
+
+A findings-only stream would report a skipped check and a passed check
+identically, which is what the ``report`` records avoid. But anything constant
+across the run belongs in the ``run`` record rather than repeated on every
+subject: on a real archive that repetition is thousands of identical lines,
+which is how a genuine finding gets missed.
 
 Exit status:
 
@@ -19,6 +27,7 @@ Exit status:
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -27,7 +36,14 @@ from .collection import check_collection, list_bins
 from .model import Cost, Report, Severity
 from .products import PRODUCTS
 from .raw import resolve_fileset
-from .registry import CHECKS, GROUPS, codes_for_group, finding
+from .registry import (
+    CHECKS,
+    GROUPS,
+    OPT_IN_CHECKS,
+    OPT_IN_REASON,
+    codes_for_group,
+    finding,
+)
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1
@@ -49,10 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
         help='how much I/O to spend per bin (default: %(default)s)')
     parser.add_argument(
         '--json', action='store_true',
-        help='emit JSON Lines: one "report" record per subject carrying its '
-             'skipped and truncated checks, then one "finding" record per '
-             'finding. Every subject gets a report record, including a clean '
-             'one, so silence never has to be read as health')
+        help='emit JSON Lines: a "run" record for what is true of the whole '
+             'invocation, then a "report" record per subject and a "finding" '
+             'record per finding. Every subject gets a report record, '
+             'including a clean one, so silence never reads as health')
     parser.add_argument(
         '--expect', default='',
         help=f'comma-separated products that must be present: '
@@ -85,8 +101,24 @@ def build_parser() -> argparse.ArgumentParser:
         '--ignore', default='', metavar='CODE,...',
         help='suppress these check codes')
     parser.add_argument(
-        '--mixed-instruments', action='store_true',
-        help='run the opt-in mixed_instruments check')
+        '--enable', default='', metavar='CODE,...',
+        help=f'run these opt-in checks, or "all". Opt-in checks are quiet by '
+             f'default because they fire on nearly every bin or encode one '
+             f'site\'s convention: {", ".join(OPT_IN_CHECKS)}')
+    parser.add_argument(
+        '--roi-optional', action='store_true',
+        help='treat an absent .roi as expected rather than an error, for a '
+             'dataset whose ROI telemetry lags its .hdr and .adc. Such bins '
+             'record missing_roi as skipped, and a fileset whose only absent '
+             'file is the .roi is no longer reported incomplete; one missing '
+             'its .hdr or .adc still is')
+    parser.add_argument(
+        '-q', '--quiet', action='store_true',
+        help='omit subjects that have nothing to report, so only problems are '
+             'printed. A subject with a skipped or truncated check is still '
+             'shown — that is not the same as clean. The summary line still '
+             'says how many subjects were checked. Human output only; for '
+             'JSON, filter with jq')
     parser.add_argument(
         '--strict', action='store_true',
         help='count warnings toward a non-zero exit status')
@@ -104,6 +136,24 @@ def _validate_codes(codes, label) -> None:
     unknown = sorted(codes - set(CHECKS))
     if unknown:
         raise ValueError(f'unknown check code(s) for {label}: {", ".join(unknown)}')
+
+
+def _parse_enable(value: str):
+    """Turn ``--enable`` into what the check entry points expect.
+
+    Naming a check that already runs by default is an error rather than a
+    no-op: it almost always means the caller expected it to be off.
+    """
+    if value.strip() == 'all':
+        return 'all'
+    codes = _split_codes(value)
+    _validate_codes(codes, '--enable')
+    not_opt_in = sorted(codes - set(OPT_IN_CHECKS))
+    if not_opt_in:
+        raise ValueError(
+            f'--enable names check(s) that run by default: '
+            f'{", ".join(not_opt_in)}')
+    return codes
 
 
 def list_checks(out) -> None:
@@ -174,7 +224,7 @@ def _safe_report(subject: str, cost: Cost, run) -> Report:
         return _failed_report(subject, cost, e)
 
 
-def _reports_for_path(path, args, expect, product_dirs) -> list:
+def _reports_for_path(path, args, expect, product_dirs, enable) -> list:
     """Run the right checks for one command-line path.
 
     Each subject is checked in isolation: a crash on one bin is reported as
@@ -186,11 +236,12 @@ def _reports_for_path(path, args, expect, product_dirs) -> list:
         return [_safe_report(bin_id, cost, lambda: check_bin(
             path, cost=cost, expect=expect, root_path=args.root,
             products_dir=args.products_root, product_dirs=product_dirs,
-            product_search=_product_search(args.product_search, tree=False)))]
+            product_search=_product_search(args.product_search, tree=False),
+            enable=enable, roi_optional=args.roi_optional))]
 
     root = os.path.normpath(path)
     reports = [_safe_report(root, Cost.STAT, lambda: check_collection(
-        path, mixed_instruments=args.mixed_instruments,
+        path, enable=enable, roi_optional=args.roi_optional,
         adcmod_root=args.adcmod_root))]
 
     try:
@@ -205,11 +256,37 @@ def _reports_for_path(path, args, expect, product_dirs) -> list:
         reports.append(_safe_report(bin_id, cost, lambda p=basepath: check_bin(
             p, cost=cost, expect=expect, root_path=args.root or path,
             products_dir=args.products_root, product_dirs=product_dirs,
-            product_search=search)))
+            product_search=search, enable=enable,
+            roi_optional=args.roi_optional)))
     return reports
 
 
-def _print_report(report: Report, out) -> None:
+def _run_wide_skips(reports) -> dict:
+    """Return the skips that belong to the run rather than to any subject.
+
+    Which opt-in checks went unrequested is a property of the command line, so
+    it is identical on every report. Repeating it per subject turns a sweep of
+    a real archive into thousands of lines that all say the same thing, which
+    is how a genuine finding gets missed. Reported once instead.
+    """
+    return {code: reason
+            for report in reports
+            for code, reason in report.skipped.items()
+            if reason == OPT_IN_REASON}
+
+
+def _has_output(report: Report, omit_skipped=()) -> bool:
+    """True if this report has anything to say beyond "checked, nothing wrong".
+
+    A skipped or truncated check counts: those are the report saying it does
+    *not* know something, which is the opposite of a clean bill of health and
+    must not be what ``--quiet`` hides.
+    """
+    return bool(report.findings or report.truncated
+                or set(report.skipped) - set(omit_skipped))
+
+
+def _print_report(report: Report, out, *, omit_skipped=()) -> None:
     """Print one report as a grouped, human-readable block."""
     counts = report.counts_by_severity()
     headline = ', '.join(
@@ -225,7 +302,8 @@ def _print_report(report: Report, out) -> None:
         print(f'  ...      {code:<34} and {suppressed} more not listed',
               file=out)
     for code, reason in sorted(report.skipped.items()):
-        print(f'  skipped  {code:<34} {reason}', file=out)
+        if code not in omit_skipped:
+            print(f'  skipped  {code:<34} {reason}', file=out)
 
 
 def main(argv=None) -> int:
@@ -251,28 +329,46 @@ def main(argv=None) -> int:
             raise ValueError(
                 f'unknown product(s) for --expect: {", ".join(unknown)}')
         product_dirs = _parse_product_dirs(args.product_dir)
+        enable = _parse_enable(args.enable)
 
         reports = []
         for path in args.paths:
             if not os.path.exists(path) and not os.path.exists(path + '.adc'):
                 raise FileNotFoundError(path)
             reports.extend(
-                _reports_for_path(path, args, expect, product_dirs))
+                _reports_for_path(path, args, expect, product_dirs, enable))
     except (ValueError, OSError) as e:
         print(f'ifcbkit-qc: {e}', file=sys.stderr)
         return EXIT_FAILED
 
     reports = [report.filtered(only, ignore) for report in reports]
+    run_wide = _run_wide_skips(reports)
 
     if args.json:
+        run = {'type': 'run', 'cost': args.cost,
+               'n_subjects': len(reports)}
+        if args.roi_optional:
+            run['roi_optional'] = True
+        if run_wide:
+            run['skipped'] = run_wide
+        out.write(json.dumps(run, sort_keys=True) + '\n')
         for report in reports:
-            out.write(report.to_jsonl())
+            out.write(report.to_jsonl(omit_skipped=run_wide))
     else:
+        hidden = 0
         for report in reports:
-            _print_report(report, out)
+            if args.quiet and not _has_output(report, run_wide):
+                hidden += 1
+                continue
+            _print_report(report, out, omit_skipped=run_wide)
         n_bad = sum(1 for report in reports if not report.ok)
-        print(f'{len(reports)} subject(s) checked, {n_bad} with errors',
-              file=out)
+        summary = f'{len(reports)} subject(s) checked, {n_bad} with errors'
+        if hidden:
+            summary += f' ({hidden} with nothing to report, not shown)'
+        print(summary, file=out)
+        if run_wide:
+            print(f'not run for any subject: {", ".join(sorted(run_wide))} '
+                  f'({OPT_IN_REASON})', file=out)
 
     has_errors = any(report.errors for report in reports)
     has_warnings = any(report.warnings for report in reports)

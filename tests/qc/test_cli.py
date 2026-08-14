@@ -63,10 +63,169 @@ def test_ignore_can_clear_the_only_failing_code(tmp_path, capsys):
 def test_only_restricts_to_named_codes(tmp_path, capsys):
     basepath = copy_fileset(tmp_path)
     remove_file(basepath, 'roi')
-    status, out, _ = run(capsys, basepath, '--only', 'adc_zero_geometry')
-    assert status == EXIT_OK
-    assert 'adc_zero_geometry' in out
+    remove_file(basepath, 'hdr')
+    status, out, _ = run(capsys, basepath, '--only', 'missing_hdr')
+    assert status == EXIT_FINDINGS
+    assert 'missing_hdr' in out
     assert 'missing_roi' not in out
+
+
+def test_opt_in_checks_are_off_until_enabled(tmp_path, capsys):
+    basepath = copy_fileset(tmp_path)
+
+    _, default_out, _ = run(capsys, basepath)
+    assert 'no findings' in default_out
+    # Named once for the run, not indented under the subject.
+    assert 'not run for any subject: adc_zero_geometry' in default_out
+
+    _, enabled_out, _ = run(capsys, basepath, '--enable', 'adc_zero_geometry')
+    assert 'info     adc_zero_geometry' in enabled_out
+    assert 'not run for any subject' not in enabled_out
+
+
+def test_enable_all_turns_on_every_opt_in_check(tmp_path, capsys):
+    from ifcbkit.qc import OPT_IN_CHECKS
+
+    root = tmp_path / 'data'
+    copy_fileset(root, D_BIN_ID, into='D20130526')
+    copy_fileset(root, D_BIN_ID, into='D20130526',
+                 new_bin_id='D20130526T095208_IFCB014')
+
+    _, out, _ = run(capsys, str(root), '--enable', 'all')
+    for code in OPT_IN_CHECKS:
+        assert f'skipped  {code}' not in out
+    assert 'mixed_instruments' in out
+    assert 'adc_zero_geometry' in out
+
+
+def _tree_with_one_bad_bin(tmp_path):
+    """Three clean bins and one missing its .roi. Returns the tree root."""
+    root = tmp_path / 'data'
+    for hour in ('T095207', 'T105207', 'T115207', 'T125207'):
+        copy_fileset(root, D_BIN_ID, into='D20130526',
+                     new_bin_id=f'D20130526{hour}_IFCB013')
+    remove_file(str(root / 'D20130526' / 'D20130526T125207_IFCB013'), 'roi')
+    return root
+
+
+def test_quiet_prints_only_subjects_with_something_to_report(tmp_path, capsys):
+    root = _tree_with_one_bad_bin(tmp_path)
+
+    _, full_out, _ = run(capsys, str(root), '--ignore', 'hdr_pid_time_mismatch')
+    assert full_out.count('no findings') == 3  # the 3 intact bins
+
+    status, quiet_out, _ = run(
+        capsys, str(root), '--quiet', '--ignore', 'hdr_pid_time_mismatch')
+    assert status == EXIT_FINDINGS
+    assert 'no findings' not in quiet_out
+    assert 'missing_roi' in quiet_out
+    assert 'D20130526T125207_IFCB013' in quiet_out
+    assert 'D20130526T095207_IFCB013' not in quiet_out
+
+
+def test_quiet_still_accounts_for_every_subject(tmp_path, capsys):
+    """Hiding clean subjects must not hide that they were checked."""
+    root = _tree_with_one_bad_bin(tmp_path)
+    _, out, _ = run(capsys, str(root), '--quiet',
+                    '--ignore', 'hdr_pid_time_mismatch')
+    # The tree report also flags the gap, so two subjects carry the error.
+    assert '5 subject(s) checked, 2 with errors' in out
+    assert '(3 with nothing to report, not shown)' in out
+    # The run-wide opt-in note survives too.
+    assert 'not run for any subject: adc_zero_geometry' in out
+
+
+def test_quiet_does_not_hide_a_subject_whose_check_was_skipped(tmp_path,
+                                                              capsys):
+    """A skipped check is the report saying it does not know — never clean."""
+    basepath = copy_fileset(tmp_path)
+    # A partial ADCFileFormat declaration cannot be compared against the
+    # layout, so that check is skipped while the bin is otherwise fine.
+    set_hdr_key(basepath, 'ADCFileFormat', 'trigger,ROIx,ROIy')
+
+    _, out, _ = run(capsys, basepath, '--quiet')
+    assert D_BIN_ID in out
+    assert 'skipped  adc_format_declaration_mismatch' in out
+    assert 'not shown' not in out
+
+
+def test_quiet_on_a_wholly_clean_tree_prints_just_the_summary(tmp_path, capsys):
+    root = tmp_path / 'data'
+    copy_fileset(root, D_BIN_ID, into='D20130526')
+
+    status, out, _ = run(capsys, str(root), '--quiet')
+    assert status == EXIT_OK
+    assert D_BIN_ID not in out
+    assert '2 subject(s) checked, 0 with errors' in out
+    assert '(2 with nothing to report, not shown)' in out
+
+
+def test_roi_optional_stops_pending_telemetry_being_an_error(tmp_path, capsys):
+    """.roi files can lag the .hdr and .adc, so their absence is not damage."""
+    root = tmp_path / 'data'
+    for hour in ('T095207', 'T105207'):
+        copy_fileset(root, D_BIN_ID, into='D20130526',
+                     new_bin_id=f'D20130526{hour}_IFCB013')
+        remove_file(str(root / 'D20130526' / f'D20130526{hour}_IFCB013'), 'roi')
+
+    status, out, _ = run(capsys, str(root))
+    assert status == EXIT_FINDINGS
+    assert 'missing_roi' in out
+    assert 'fileset_incomplete' in out
+
+    ok_status, ok_out, _ = run(capsys, str(root), '--roi-optional')
+    assert ok_status == EXIT_OK
+    assert '0 with errors' in ok_out
+    assert 'fileset_incomplete' not in ok_out
+    # Not an error, but not verified either.
+    assert 'skipped  missing_roi' in ok_out
+    assert 'ADC-to-ROI checks could not run' in ok_out
+
+
+def test_roi_optional_still_reports_a_truly_incomplete_fileset(tmp_path,
+                                                               capsys):
+    """The distinction --ignore fileset_incomplete could not make."""
+    root = tmp_path / 'data'
+    copy_fileset(root, D_BIN_ID, into='D20130526')
+    basepath = str(root / 'D20130526' / D_BIN_ID)
+    remove_file(basepath, 'roi')
+    remove_file(basepath, 'adc')
+
+    status, out, _ = run(capsys, str(root), '--roi-optional')
+    assert status == EXIT_FINDINGS
+    assert 'missing_adc' in out
+    assert 'fileset_incomplete' in out
+    assert 'missing .adc' in out
+    # Reported as an absence to account for, never as an error.
+    assert 'error    missing_roi' not in out
+    assert 'skipped  missing_roi' in out
+
+
+def test_roi_optional_appears_in_the_json_run_record(tmp_path, capsys):
+    basepath = copy_fileset(tmp_path)
+    remove_file(basepath, 'roi')
+
+    status, out, _ = run(capsys, basepath, '--json', '--roi-optional')
+    assert status == EXIT_OK
+    run_record, envelopes, findings = json_records(out)
+    assert run_record['roi_optional'] is True
+    assert findings == []
+    assert 'missing_roi' in envelopes[0]['skipped']
+
+
+def test_enabling_a_default_check_fails_cleanly(tmp_path, capsys):
+    """Naming a default-on check is a mistake worth reporting, not a no-op."""
+    basepath = copy_fileset(tmp_path)
+    status, _, err = run(capsys, basepath, '--enable', 'missing_roi')
+    assert status == EXIT_FAILED
+    assert 'run by default' in err
+
+
+def test_unknown_enable_code_fails_cleanly(tmp_path, capsys):
+    basepath = copy_fileset(tmp_path)
+    status, _, err = run(capsys, basepath, '--enable', 'no_such_check')
+    assert status == EXIT_FAILED
+    assert 'unknown check code' in err
 
 
 def test_unknown_code_fails_cleanly(tmp_path, capsys):
@@ -83,10 +242,13 @@ def test_missing_path_fails_cleanly(tmp_path, capsys):
 
 
 def json_records(out):
-    """Split JSON Lines output into (envelopes, findings)."""
+    """Split JSON Lines output into (run_record, envelopes, findings)."""
     records = [json.loads(line) for line in out.splitlines()]
     assert all('type' in record for record in records)
-    return ([r for r in records if r['type'] == 'report'],
+    runs = [r for r in records if r['type'] == 'run']
+    assert len(runs) == 1 and records[0] is runs[0], 'one run record, first'
+    return (runs[0],
+            [r for r in records if r['type'] == 'report'],
             [r for r in records if r['type'] == 'finding'])
 
 
@@ -96,7 +258,7 @@ def test_json_output_is_an_envelope_plus_one_finding_per_line(tmp_path, capsys):
     status, out, _ = run(capsys, basepath, '--json')
     assert status == EXIT_FINDINGS
 
-    envelopes, raw_findings = json_records(out)
+    _, envelopes, raw_findings = json_records(out)
     findings = [Finding.from_dict(record) for record in raw_findings]
     assert 'missing_roi' in {f.code for f in findings}
     assert all(f.subject == D_BIN_ID for f in findings)
@@ -105,28 +267,41 @@ def test_json_output_is_an_envelope_plus_one_finding_per_line(tmp_path, capsys):
     assert envelopes[0]['n_findings'] == len(findings)
 
 
-def test_json_names_the_checks_that_were_skipped(tmp_path, capsys):
-    """A skipped check and a passed check must not look alike to a consumer."""
+def test_json_names_run_wide_skips_once(tmp_path, capsys):
+    """A skipped check and a passed check must not look alike to a consumer.
+
+    But which opt-in checks went unrequested is a property of the command line,
+    so it belongs to the run, not repeated on every subject in the archive.
+    """
     root = tmp_path / 'data'
-    copy_fileset(root, D_BIN_ID, into='D20130526')
+    for hour in ('T095207', 'T105207', 'T115207'):
+        copy_fileset(root, D_BIN_ID, into='D20130526',
+                     new_bin_id=f'D20130526{hour}_IFCB013')
     _, out, _ = run(capsys, str(root), '--json')
 
-    envelopes, _ = json_records(out)
-    collection = next(e for e in envelopes if e['subject'] == str(root))
-    assert 'mixed_instruments' in collection['skipped']
+    run_record, envelopes, _ = json_records(out)
+    assert set(run_record['skipped']) == {'adc_zero_geometry',
+                                          'mixed_instruments'}
+    assert run_record['n_subjects'] == len(envelopes) == 4  # tree plus 3 bins
+    # Said once, not four times.
+    assert all('skipped' not in envelope for envelope in envelopes)
 
 
 def test_json_records_a_clean_subject(tmp_path, capsys):
     """Silence is not health: a clean bin still gets a record of its own."""
     basepath = copy_fileset(tmp_path)
-    status, out, _ = run(
-        capsys, basepath, '--json', '--ignore', 'adc_zero_geometry')
+    status, out, _ = run(capsys, basepath, '--json')
     assert status == EXIT_OK
 
-    envelopes, findings = json_records(out)
+    run_record, envelopes, findings = json_records(out)
     assert findings == []
     assert [(e['subject'], e['n_findings'], e['n_errors'])
             for e in envelopes] == [(D_BIN_ID, 0, 0)]
+    # Nothing per-subject to say, so the record stays to the point.
+    assert 'skipped' not in envelopes[0]
+    assert 'truncated' not in envelopes[0]
+    # The opt-in check nobody ran is still on the record, once, for the run.
+    assert 'adc_zero_geometry' in run_record['skipped']
 
 
 def test_json_reports_truncated_findings(tmp_path, capsys):
@@ -139,7 +314,7 @@ def test_json_reports_truncated_findings(tmp_path, capsys):
         basepath, read_adc_lines(basepath) + ['1,2,3'] * extra)
 
     _, out, _ = run(capsys, basepath, '--json')
-    envelopes, findings = json_records(out)
+    _, envelopes, findings = json_records(out)
     code = 'adc_column_count_mismatch'
 
     listed = [f for f in findings if f['code'] == code]

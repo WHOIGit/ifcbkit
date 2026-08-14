@@ -39,7 +39,15 @@ from .products import (
     product_root,
 )
 from .raw import check_fileset, resolve_fileset
-from .registry import CHECKS, CheckSpec, GROUPS, codes_for_group, spec_for
+from .registry import (
+    CHECKS,
+    CheckSpec,
+    GROUPS,
+    OPT_IN_CHECKS,
+    OPT_IN_REASON,
+    codes_for_group,
+    spec_for,
+)
 
 __all__ = [
     'CHECKS',
@@ -48,6 +56,8 @@ __all__ = [
     'Finding',
     'GROUPS',
     'MAX_FINDINGS_PER_CODE',
+    'OPT_IN_CHECKS',
+    'OPT_IN_REASON',
     'Report',
     'Severity',
     'candidate_directories',
@@ -68,7 +78,8 @@ __all__ = [
 
 def check_bin(path, *, bin_id=None, cost=Cost.PARSE, expect=(),
               root_path=None, adcmod=None, products_dir=None,
-              product_dirs=None, product_search=True) -> Report:
+              product_dirs=None, product_search=True, enable=(),
+              roi_optional=False) -> Report:
     """Check one bin's raw fileset and its derived products together.
 
     The raw pass hands its parsed targets to the product pass, so product
@@ -92,17 +103,22 @@ def check_bin(path, *, bin_id=None, cost=Cost.PARSE, expect=(),
       the usual production layout
     :param product_search: fall back to a recursive walk of a product root;
       see :func:`ifcbkit.qc.products.find_products`
+    :param enable: opt-in check codes to run, or ``'all'``; see
+      :data:`ifcbkit.qc.registry.OPT_IN_CHECKS`
+    :param roi_optional: treat an absent .roi as expected rather than an error,
+      for datasets whose ROI telemetry lags; see :func:`check_fileset`
     :returns: one :class:`Report` covering both scopes
     """
     paths = resolve_fileset(path, bin_id)
     targets: list = []
     report = check_fileset(
         path, bin_id=bin_id, cost=cost, root_path=root_path, adcmod=adcmod,
-        targets_out=targets)
+        targets_out=targets, enable=enable, roi_optional=roi_optional)
     if products_dir is None and not product_dirs:
         products_dir = paths.directory
     check_products(
         products_dir, paths.bin_id, cost=cost, expect=expect,
         targets={record['target'] for record in targets} if targets else None,
-        report=report, product_dirs=product_dirs, search=product_search)
+        report=report, product_dirs=product_dirs, search=product_search,
+        enable=enable)
     return report

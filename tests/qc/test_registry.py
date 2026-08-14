@@ -2,8 +2,18 @@
 
 import pytest
 
-from ifcbkit.qc import CHECKS, Cost, GROUPS, Severity, codes_for_group, spec_for
-from ifcbkit.qc.registry import finding
+from ifcbkit.qc import (
+    CHECKS,
+    Cost,
+    GROUPS,
+    OPT_IN_CHECKS,
+    OPT_IN_REASON,
+    Report,
+    Severity,
+    codes_for_group,
+    spec_for,
+)
+from ifcbkit.qc.registry import finding, note_opt_in_skips, resolve_opt_ins
 
 
 def test_codes_are_unique_and_self_consistent():
@@ -45,6 +55,34 @@ def test_finding_renders_the_template_from_detail():
     f = finding('adc_blank_line', 'D20130526T095207_IFCB013', line=42)
     assert '42' in f.message
     assert f.detail == {'line': 42}
+
+
+def test_opt_in_checks_are_derived_from_the_specs():
+    assert set(OPT_IN_CHECKS) == {
+        code for code, spec in CHECKS.items() if spec.opt_in}
+    # Both current ones fire on ordinary, undamaged data.
+    assert set(OPT_IN_CHECKS) == {'adc_zero_geometry', 'mixed_instruments'}
+
+
+def test_resolve_opt_ins_rejects_default_on_checks():
+    assert resolve_opt_ins(()) == frozenset()
+    assert resolve_opt_ins('all') == frozenset(OPT_IN_CHECKS)
+    assert resolve_opt_ins(['mixed_instruments']) == {'mixed_instruments'}
+    with pytest.raises(ValueError, match='not an opt-in check'):
+        resolve_opt_ins(['missing_adc'])
+    with pytest.raises(KeyError, match='unregistered QC check code'):
+        resolve_opt_ins(['no_such_check'])
+
+
+def test_note_opt_in_skips_accounts_for_what_it_did_not_run():
+    report = Report(subject='D20130526T095207_IFCB013', cost=Cost.PARSE)
+    note_opt_in_skips(report, GROUPS, frozenset())
+    assert set(report.skipped) == set(OPT_IN_CHECKS)
+    assert set(report.skipped.values()) == {OPT_IN_REASON}
+
+    enabled = Report(subject='D20130526T095207_IFCB013', cost=Cost.PARSE)
+    note_opt_in_skips(enabled, GROUPS, frozenset(OPT_IN_CHECKS))
+    assert enabled.skipped == {}
 
 
 def test_finding_round_trips_through_json():

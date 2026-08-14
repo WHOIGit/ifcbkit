@@ -153,9 +153,13 @@ _SPECS = [
           'Trigger numbers decrease within the .adc file.',
           'trigger {trigger} at target {target} decreases from '
           '{previous_trigger}.'),
+    # Opt-in: most triggers in a real bin record no ROI, so this fires on
+    # essentially every bin ever collected. It is a fact about the data, not a
+    # defect, and reporting it by default buries the findings that matter.
     _spec('adc_zero_geometry', Severity.INFO, Cost.PARSE, ADC,
           'A trigger recorded no ROI (zero width or height).',
-          '{count} trigger(s) recorded no ROI.'),
+          '{count} trigger(s) recorded no ROI.',
+          opt_in=True),
 
     # --- ADC <-> ROI consistency ---
     _spec('roi_offset_past_eof', Severity.ERROR, Cost.PARSE, ROI,
@@ -303,6 +307,52 @@ _SPECS = [
 ]
 
 CHECKS: dict = {spec.code: spec for spec in _SPECS}
+
+# Checks that stay quiet until asked for by code. Either they state something
+# true of nearly every bin (``adc_zero_geometry``) or they encode one site's
+# layout convention as a rule (``mixed_instruments``).
+OPT_IN_CHECKS = tuple(spec.code for spec in _SPECS if spec.opt_in)
+
+# Why an opt-in check has no findings. It went unrequested, which is not the
+# same as having passed — hence a Report.skipped entry rather than silence.
+OPT_IN_REASON = 'not requested (opt-in check)'
+
+
+def note_opt_in_skips(report, groups, enabled) -> None:
+    """Record the opt-in checks in ``groups`` that were not requested.
+
+    This is what makes :attr:`CheckSpec.opt_in` load-bearing rather than
+    documentation: an entry point names the groups it covers, and every opt-in
+    check in them is accounted for without the entry point listing codes.
+
+    :param report: the report to record skips on
+    :param groups: the catalogue groups this entry point runs
+    :param enabled: codes the caller asked for
+    """
+    for group in groups:
+        for code in codes_for_group(group):
+            if CHECKS[code].opt_in and code not in enabled:
+                report.skipped[code] = OPT_IN_REASON
+
+
+def resolve_opt_ins(enable) -> frozenset:
+    """Normalize a requested set of opt-in check codes.
+
+    :param enable: codes to enable, or ``'all'`` for every opt-in check
+    :returns: the codes to treat as enabled
+    :raises KeyError: if a code is not registered
+    :raises ValueError: if a registered code is not an opt-in check, which
+      would otherwise look like it had silently done nothing
+    """
+    if enable == 'all':
+        return frozenset(OPT_IN_CHECKS)
+    codes = frozenset(enable)
+    for code in sorted(codes):
+        spec = spec_for(code)
+        if not spec.opt_in:
+            raise ValueError(
+                f'{code!r} is not an opt-in check; it runs by default')
+    return codes
 
 
 def spec_for(code: str) -> CheckSpec:

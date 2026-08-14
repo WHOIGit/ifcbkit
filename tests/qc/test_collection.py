@@ -155,7 +155,7 @@ def test_mixed_instruments_is_opt_in(tmp_path):
     assert 'mixed_instruments' not in codes(default_report)
     assert 'mixed_instruments' in default_report.skipped
 
-    opted_in = check_collection(root, mixed_instruments=True)
+    opted_in = check_collection(root, enable=('mixed_instruments',))
     mixed = next(f for f in opted_in.findings if f.code == 'mixed_instruments')
     assert mixed.severity is Severity.INFO
     assert mixed.detail['instruments'] == '13, 14'
