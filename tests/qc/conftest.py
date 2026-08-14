@@ -15,6 +15,7 @@ import os
 import pytest
 
 from ifcbkit.qc import CHECKS
+from ifcbkit.qc import cli as cli_mod
 from ifcbkit.qc import collection as collection_mod
 from ifcbkit.qc import products as products_mod
 from ifcbkit.qc import raw as raw_mod
@@ -24,7 +25,7 @@ from ifcbkit.qc import registry as registry_mod
 EMITTED_CODES: set = set()
 
 # The modules that hold a direct reference to registry.finding.
-_PATCH_TARGETS = (registry_mod, raw_mod, products_mod, collection_mod)
+_PATCH_TARGETS = (registry_mod, raw_mod, products_mod, collection_mod, cli_mod)
 
 # Test modules in this directory, filled in at collection time.
 _COLLECTED_FILES: set = set()

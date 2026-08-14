@@ -73,7 +73,10 @@ def check_bin(path, *, bin_id=None, cost=Cost.PARSE, expect=(),
 
     The raw pass hands its parsed targets to the product pass, so product
     coverage is checked against the bin's real target set without parsing the
-    ADC twice.
+    ADC twice. "Real" means the corrected ADC's targets when ``root_path`` or
+    ``adcmod`` puts a usable correction in play: that is the ADC consumers read
+    and the one the products were derived from, so comparing products against
+    the raw ADC instead would invent coverage findings.
 
     :param path: basepath, a .hdr/.adc/.roi path, or a bin-named directory
     :param bin_id: the bin ID, if it differs from the basename

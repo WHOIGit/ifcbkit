@@ -6,11 +6,12 @@ sibling of the raw data root, holding ``<day>/<pid>.adc.mod``.
 
 import os
 
-from ifcbkit.qc import Cost, Severity
+from ifcbkit.qc import Cost, Severity, check_bin
 from ifcbkit.qc.raw import check_fileset
 
 from .fixtures import (
     D_BIN_ID,
+    columns_for,
     copy_fileset,
     read_adc_lines,
     remove_file,
@@ -105,6 +106,67 @@ def test_adcmod_orphan_is_reported_at_stat_cost(tmp_path):
     remove_file(basepath, 'adc')
     report = check_fileset(basepath, cost=Cost.STAT, root_path=root_path)
     assert 'adcmod_orphan' in codes(report)
+
+
+def _correction_dropping_one_target(tmp_path, basepath, day='D20130526'):
+    """Write a correction that zeroes one target's width.
+
+    Zeroing the geometry rather than deleting the line keeps every other
+    target number where it was, so the corrected target set is exactly the raw
+    one minus this target.
+
+    :returns: the target number the correction removes
+    """
+    lines = read_adc_lines(basepath)
+    dropped = target_line_numbers(basepath)[0]
+    fields = lines[dropped - 1].split(',')
+    fields[columns_for(D_BIN_ID)['width']] = '0'
+    lines[dropped - 1] = ','.join(fields)
+    _write_mod(tmp_path, day, lines)
+    return dropped
+
+
+def test_product_coverage_uses_the_corrected_targets(tmp_path):
+    """Products are derived from the ADC consumers read — the corrected one.
+
+    Comparing them against the raw ADC's targets instead would report a
+    coverage gap on every corrected bin, which is QC inventing a defect.
+    """
+    from .test_products import write_features
+
+    root_path, basepath = _raw_tree(tmp_path)
+    dropped = _correction_dropping_one_target(tmp_path, basepath)
+    corrected = [t for t in target_line_numbers(basepath) if t != dropped]
+
+    features_dir = tmp_path / 'features'
+    features_dir.mkdir()
+    write_features(features_dir, [(t, 100, 200.5) for t in corrected])
+
+    report = check_bin(
+        basepath, cost=Cost.FULL, root_path=root_path, expect=('features',),
+        product_dirs={'features': str(features_dir)})
+    assert 'features_roi_coverage' not in codes(report)
+    assert 'features_roi_not_in_bin' not in codes(report)
+    assert 'product_missing' not in codes(report)
+
+
+def test_features_covering_the_raw_targets_are_reported(tmp_path):
+    """The other direction: the raw ADC's target set is now the wrong one."""
+    from .test_products import write_features
+
+    root_path, basepath = _raw_tree(tmp_path)
+    _correction_dropping_one_target(tmp_path, basepath)
+
+    features_dir = tmp_path / 'features'
+    features_dir.mkdir()
+    write_features(
+        features_dir,
+        [(t, 100, 200.5) for t in target_line_numbers(basepath)])
+
+    report = check_bin(
+        basepath, cost=Cost.FULL, root_path=root_path,
+        product_dirs={'features': str(features_dir)})
+    assert codes(report)['features_roi_not_in_bin'] == 1
 
 
 def test_explicit_adcmod_path_overrides_root_derivation(tmp_path):

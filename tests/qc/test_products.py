@@ -110,7 +110,7 @@ def test_products_are_found_in_per_type_roots(tmp_path):
 
 
 def test_day_and_year_directories_are_found_without_searching(tmp_path):
-    # --no-product-search / search=False: conventions only, no walk.
+    # --product-search never / search=False: conventions only, no walk.
     day_dir = tmp_path / 'D20130526'
     day_dir.mkdir()
     write_features(day_dir, clean_feature_rows())

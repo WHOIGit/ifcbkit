@@ -183,13 +183,88 @@ class Report:
         return counts
 
     def extend(self, other: 'Report') -> None:
-        """Absorb another report's findings, skips, and truncation counts."""
+        """Absorb another report's findings, skips, and truncation counts.
+
+        Truncation counts are summed, not overwritten: two reports that each
+        truncated the same code both had findings they did not list, and a
+        merged report that kept only one of those counts would claim the data
+        is cleaner than it is.
+        """
         self.findings.extend(other.findings)
         self.skipped.update(other.skipped)
-        self.truncated.update(other.truncated)
+        for code, count in other.truncated.items():
+            self.truncated[code] = self.truncated.get(code, 0) + count
         for code, count in other._emitted.items():
             self._emitted[code] = self._emitted.get(code, 0) + count
 
+    def filtered(self, only=(), ignore=()) -> 'Report':
+        """Return a copy with only/ignore code filters applied.
+
+        Everything keyed by code is filtered together — findings, skips, and
+        truncation counts — so the copy cannot report a skip or a truncation
+        for a code whose findings it dropped. Nothing is shared with the
+        original: mutating either afterwards leaves the other alone.
+
+        :param only: if non-empty, keep only these codes
+        :param ignore: drop these codes
+        :returns: a new :class:`Report` with the same subject and cost
+        """
+        only = set(only)
+        ignore = set(ignore)
+
+        def keep(code: str) -> bool:
+            if only and code not in only:
+                return False
+            return code not in ignore
+
+        copy = Report(
+            subject=self.subject,
+            cost=self.cost,
+            findings=[f for f in self.findings if keep(f.code)],
+            skipped={code: reason for code, reason in self.skipped.items()
+                     if keep(code)},
+            truncated={code: count for code, count in self.truncated.items()
+                       if keep(code)},
+            max_per_code=self.max_per_code,
+        )
+        copy._emitted.update(
+            {code: count for code, count in self._emitted.items()
+             if keep(code)})
+        return copy
+
+    def envelope(self) -> dict:
+        """Return the per-report metadata record for :meth:`to_jsonl`.
+
+        A findings-only stream cannot say that a subject was checked and found
+        clean, and cannot say that a check was *skipped* rather than passed.
+        Both read as health — the one direction an integrity report must never
+        fail in — so this record carries them, along with the truncation counts
+        that would otherwise make a badly damaged bin look mildly damaged.
+        """
+        return {
+            'type': 'report',
+            'subject': self.subject,
+            'cost': self.cost.value,
+            'n_findings': len(self.findings),
+            'n_errors': len(self.errors),
+            'skipped': dict(self.skipped),
+            'truncated': dict(self.truncated),
+        }
+
     def to_jsonl(self) -> str:
-        """Return the findings as JSON Lines (one object per line)."""
-        return ''.join(f.to_json() + '\n' for f in self.findings)
+        """Return the whole report as JSON Lines.
+
+        The first line is :meth:`envelope` (``type`` of ``report``), followed
+        by one line per listed finding (``type`` of ``finding``). Every line
+        carries ``type`` so a stream covering several subjects can be split by
+        kind; a filter on a finding field, such as ``severity`` or ``code``,
+        passes over envelopes on its own.
+
+        Serializing only the findings would drop three of the five things a
+        report knows — see :meth:`envelope`.
+        """
+        lines = [json.dumps(self.envelope(), sort_keys=True)]
+        lines.extend(
+            json.dumps({'type': 'finding', **finding.to_dict()}, sort_keys=True)
+            for finding in self.findings)
+        return ''.join(line + '\n' for line in lines)

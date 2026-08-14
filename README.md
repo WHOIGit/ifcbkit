@@ -134,7 +134,8 @@ from ifcbkit.qc import check_bin, check_collection, Cost
 report = check_bin('/data/D20130526/D20130526T095207_IFCB013')
 report.ok            # False if anything of 'error' severity was found
 report.errors        # [Finding(code='missing_roi', ...), ...]
-report.to_jsonl()    # one JSON object per finding
+report.skipped       # {code: why} — checks that could not be evaluated
+report.to_jsonl()    # a 'report' record, then one 'finding' record each
 
 # The shape of a whole tree: incomplete filesets, duplicate PIDs, day-dir
 # mismatches, filesets a listing filter would silently drop.
@@ -178,7 +179,7 @@ report = check_bin(
     })
 ```
 
-Each root is searched by convention first — the root itself, then `<day_dir>/`, `<year>/<day_dir>/`, `<year>/` — and only falls back to a recursive walk if none of those hold the file. Pass `product_search=False` (`--no-product-search`) on a large archive to skip that fallback, at the cost of missing files in unconventional layouts. A product type with no root given is not searched at all, and `product_missing` names the directory it looked in. When several versions of a product are present, the highest version wins.
+Each root is searched by convention first — the root itself, then `<day_dir>/`, `<year>/<day_dir>/`, `<year>/` — and only falls back to a recursive walk if none of those hold the file. That fallback walks the whole product root, once per bin, so `ifcbkit-qc` defaults to `--product-search auto`: on for a single bin, off when walking a tree, where it would repeat for every bin. `--product-search always` forces it on, `never` off; the library-level switch is `product_search=False`. Skipping it costs you files in unconventional layouts. A product type with no root given is not searched at all, and `product_missing` names the directory it looked in. When several versions of a product are present, the highest version wins.
 
 ### `ifcbkit-qc`
 
@@ -196,6 +197,18 @@ ifcbkit-qc --cost full --expect features,class /data/raw \
   --product-dir features=/data/features --product-dir class=/data/class
 ifcbkit-qc --products-root /data/products /data/raw   # one root for all types
 ```
+
+`--json` emits two kinds of record, each tagged with `type`:
+
+```bash
+# findings only — a filter on a finding field passes over the envelopes
+ifcbkit-qc --json /data | jq -c 'select(.severity=="error")'
+
+# subjects where a check could not be evaluated at all
+ifcbkit-qc --json /data | jq -c 'select(.type=="report" and (.skipped|length>0))'
+```
+
+Every subject gets a `report` record, including one with nothing wrong, and that record carries `skipped` (checks that could not be evaluated) and `truncated` (findings counted but not listed). Without it a findings-only stream reports a skipped check and a passed check identically, and cannot distinguish a clean bin from a bin nobody looked at — for an integrity tool, silence must never be readable as health. `h5py` being absent is the ordinary way this happens: the class-score checks land in `skipped`, and nothing about the class file is actually known.
 
 Exit status is `0` for no errors, `1` when something of `error` severity was found (with `--strict`, also `warning`), and `2` if QC itself could not run.
 
@@ -256,7 +269,7 @@ Some datasets (e.g. MVCO) keep corrected ADC files outside the raw data director
 
 `ifcbkit` resolves these transparently: when listing or fetching a fileset it uses the corrected ADC in place of the raw `.adc` if one exists. Only the ADC file is substituted — `.hdr` and `.roi` always come from the raw data directory — and a raw `.adc` must still be present for the bin to be discovered. `adcmod_path(fileset_dir, pid, root_path)` returns the path a correction would have.
 
-QC reports on corrections rather than silently preferring them: `adcmod_row_delta` and `adcmod_geometry_delta` are `info` (changing targets and geometry is what a correction is *for*), while `adcmod_invalid` is an error and `adcmod_orphan` — a correction with no raw fileset — is a warning.
+QC reports on corrections rather than silently preferring them: `adcmod_row_delta` and `adcmod_geometry_delta` are `info` (changing targets and geometry is what a correction is *for*), while `adcmod_invalid` is an error and `adcmod_orphan` — a correction with no raw fileset — is a warning. Product coverage, though, is compared against the *corrected* target set when a usable correction exists, because that is the ADC consumers read and the one the products were derived from — checking products against the raw ADC would invent coverage findings on every corrected bin.
 
 ```python
 report = check_bin('/data/D20130526/D20130526T095207_IFCB013', root_path='/data')

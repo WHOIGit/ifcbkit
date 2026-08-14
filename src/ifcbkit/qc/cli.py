@@ -3,7 +3,15 @@
 
 Takes bins or whole data trees, prints a grouped summary (or JSON Lines with
 ``--json``), and exits non-zero when something is wrong so it can be used in a
-pipeline:
+pipeline.
+
+``--json`` emits both kinds of record the human output shows: a ``report``
+record per subject — including subjects with nothing wrong — carrying the
+checks that were skipped and the findings that were truncated, then a
+``finding`` record each. A findings-only stream would report a skipped check
+and a passed check identically, which is the failure this avoids.
+
+Exit status:
 
 - ``0`` nothing of ``error`` severity (``--strict``: nor ``warning``)
 - ``1`` at least one such finding
@@ -18,7 +26,8 @@ from . import check_bin
 from .collection import check_collection, list_bins
 from .model import Cost, Report, Severity
 from .products import PRODUCTS
-from .registry import CHECKS, GROUPS, codes_for_group
+from .raw import resolve_fileset
+from .registry import CHECKS, GROUPS, codes_for_group, finding
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1
@@ -40,7 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
         help='how much I/O to spend per bin (default: %(default)s)')
     parser.add_argument(
         '--json', action='store_true',
-        help='emit JSON Lines, one finding per line')
+        help='emit JSON Lines: one "report" record per subject carrying its '
+             'skipped and truncated checks, then one "finding" record per '
+             'finding. Every subject gets a report record, including a clean '
+             'one, so silence never has to be read as health')
     parser.add_argument(
         '--expect', default='',
         help=f'comma-separated products that must be present: '
@@ -54,9 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
         help=f'root directory for one product type ({", ".join(PRODUCTS)}); '
              f'repeatable. This is the usual layout: one tree per product type')
     parser.add_argument(
-        '--no-product-search', action='store_true',
-        help='do not fall back to a recursive walk of a product root; rely on '
-             'the day/year directory conventions only')
+        '--product-search', choices=('auto', 'always', 'never'), default='auto',
+        help='whether to fall back to a recursive walk of a product root when '
+             'the day/year conventions do not turn up a bin\'s product. The '
+             'walk is per bin, so "auto" (default) does it for a single bin '
+             'but not while walking a tree, where it would repeat for every '
+             'bin in the tree')
     parser.add_argument(
         '--adcmod-root', metavar='PATH',
         help='adcmod tree to check for orphaned corrections')
@@ -124,41 +139,74 @@ def _parse_product_dirs(specs) -> dict:
     return product_dirs
 
 
+def _product_search(mode: str, *, tree: bool) -> bool:
+    """Resolve ``--product-search`` into a boolean for one subject.
+
+    The recursive fallback walks a whole product root, and it happens per bin,
+    so leaving it on for a tree is O(bins x product tree). ``auto`` therefore
+    only searches when the subject is a single bin.
+    """
+    if mode == 'always':
+        return True
+    if mode == 'never':
+        return False
+    return not tree
+
+
+def _failed_report(subject: str, cost: Cost, exc: BaseException) -> Report:
+    """Return a report whose only finding is that QC itself crashed here."""
+    report = Report(subject=subject, cost=cost)
+    report.add(finding(
+        'check_failed', subject, error=f'{type(exc).__name__}: {exc}'))
+    return report
+
+
+def _safe_report(subject: str, cost: Cost, run) -> Report:
+    """Run one subject's checks, turning an unexpected crash into a finding.
+
+    A damaged archive is where an unforeseen exception is most likely, and
+    losing every other subject's report to it is the wrong failure mode for an
+    integrity tool. ``KeyboardInterrupt`` and ``SystemExit`` still propagate.
+    """
+    try:
+        return run()
+    except Exception as e:
+        return _failed_report(subject, cost, e)
+
+
 def _reports_for_path(path, args, expect, product_dirs) -> list:
-    """Run the right checks for one command-line path."""
+    """Run the right checks for one command-line path.
+
+    Each subject is checked in isolation: a crash on one bin is reported as
+    ``check_failed`` against that bin and the rest of the tree still runs.
+    """
     cost = Cost(args.cost)
-    product_options = dict(
-        products_dir=args.products_root, product_dirs=product_dirs,
-        product_search=not args.no_product_search)
     if _is_fileset(path):
-        return [check_bin(
+        bin_id = resolve_fileset(path).bin_id
+        return [_safe_report(bin_id, cost, lambda: check_bin(
             path, cost=cost, expect=expect, root_path=args.root,
-            **product_options)]
+            products_dir=args.products_root, product_dirs=product_dirs,
+            product_search=_product_search(args.product_search, tree=False)))]
 
-    reports = [check_collection(
+    root = os.path.normpath(path)
+    reports = [_safe_report(root, Cost.STAT, lambda: check_collection(
         path, mixed_instruments=args.mixed_instruments,
-        adcmod_root=args.adcmod_root)]
-    for directory, bin_id in list_bins(path):
-        reports.append(check_bin(
-            os.path.join(directory, bin_id), cost=cost, expect=expect,
-            root_path=args.root or path, **product_options))
+        adcmod_root=args.adcmod_root))]
+
+    try:
+        bins = list_bins(path)
+    except Exception as e:  # a tree we cannot even enumerate
+        reports.append(_failed_report(root, cost, e))
+        return reports
+
+    search = _product_search(args.product_search, tree=True)
+    for directory, bin_id in bins:
+        basepath = os.path.join(directory, bin_id)
+        reports.append(_safe_report(bin_id, cost, lambda p=basepath: check_bin(
+            p, cost=cost, expect=expect, root_path=args.root or path,
+            products_dir=args.products_root, product_dirs=product_dirs,
+            product_search=search)))
     return reports
-
-
-def _filter(report: Report, only, ignore) -> Report:
-    """Return a copy of the report with only/ignore applied."""
-    if not only and not ignore:
-        return report
-    filtered = Report(
-        subject=report.subject, cost=report.cost, skipped=report.skipped,
-        truncated=report.truncated, max_per_code=report.max_per_code)
-    for finding in report.findings:
-        if only and finding.code not in only:
-            continue
-        if finding.code in ignore:
-            continue
-        filtered.findings.append(finding)
-    return filtered
 
 
 def _print_report(report: Report, out) -> None:
@@ -169,10 +217,10 @@ def _print_report(report: Report, out) -> None:
         for severity in _SEVERITY_ORDER if counts[severity])
     print(f'{report.subject}: {headline or "no findings"}', file=out)
     for severity in _SEVERITY_ORDER:
-        for finding in report.findings:
-            if finding.severity is severity:
-                print(f'  {severity.value:<8} {finding.code:<34} '
-                      f'{finding.message}', file=out)
+        for item in report.findings:
+            if item.severity is severity:
+                print(f'  {severity.value:<8} {item.code:<34} '
+                      f'{item.message}', file=out)
     for code, suppressed in sorted(report.truncated.items()):
         print(f'  ...      {code:<34} and {suppressed} more not listed',
               file=out)
@@ -214,7 +262,7 @@ def main(argv=None) -> int:
         print(f'ifcbkit-qc: {e}', file=sys.stderr)
         return EXIT_FAILED
 
-    reports = [_filter(report, only, ignore) for report in reports]
+    reports = [report.filtered(only, ignore) for report in reports]
 
     if args.json:
         for report in reports:

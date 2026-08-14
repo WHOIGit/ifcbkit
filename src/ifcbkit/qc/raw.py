@@ -546,20 +546,25 @@ def _resolve_adcmod(paths: FilesetPaths, root_path, adcmod) -> str | None:
     return adcmod_path(paths.directory, paths.bin_id, root_path)
 
 
-def _check_adcmod(paths, sizes, mod_path, raw_targets, report) -> None:
+def _check_adcmod(paths, sizes, mod_path, raw_targets, report) -> list | None:
     """Compare a corrected ADC against the raw one.
 
     A correction that changes target count or geometry is not a defect — that
     is what corrections are for — so those are ``info``. What matters is a
     correction that cannot be used, or one with no raw fileset to correct.
+
+    :returns: the corrected target records, or None if there is no usable
+      correction. Consumers read the correction in place of the raw .adc (see
+      :func:`ifcbkit.fileset.sync_resolve_adc_path`), so these — not the raw
+      targets — are the bin's real target set for anything downstream.
     """
     if not os.path.exists(mod_path):
-        return
+        return None
 
     if sizes['adc'] is None:
         report.add(finding(
             'adcmod_orphan', paths.bin_id, path=mod_path))
-        return
+        return None
 
     try:
         with open(mod_path, 'rb') as f:
@@ -567,14 +572,14 @@ def _check_adcmod(paths, sizes, mod_path, raw_targets, report) -> None:
     except OSError as e:
         report.add(finding(
             'adcmod_invalid', paths.bin_id, path=mod_path, reason=str(e)))
-        return
+        return None
 
     mod_targets = list(adc_mod.iter_adc_targets(paths.bin_id, mod_bytes))
     if not mod_targets:
         report.add(finding(
             'adcmod_invalid', paths.bin_id, path=mod_path,
             reason='it contains no usable targets'))
-        return
+        return None
 
     if len(mod_targets) != len(raw_targets):
         report.add(finding(
@@ -592,6 +597,7 @@ def _check_adcmod(paths, sizes, mod_path, raw_targets, report) -> None:
         report.add(finding(
             'adcmod_geometry_delta', paths.bin_id, path=mod_path,
             count=changed))
+    return mod_targets
 
 
 def check_fileset(path, *, bin_id=None, cost=Cost.PARSE,
@@ -604,9 +610,13 @@ def check_fileset(path, *, bin_id=None, cost=Cost.PARSE,
     :param root_path: the raw data root, if corrected ADC files should be
       checked; the ``adcmod`` tree is its sibling
     :param adcmod: an explicit .adc.mod path, instead of deriving one
-    :param targets_out: optional list; the parsed target records are appended
-      to it, so a caller that also needs them (product coverage checks) does
-      not have to parse the ADC a second time
+    :param targets_out: optional list; the bin's *effective* target records are
+      appended to it, so a caller that also needs them (product coverage
+      checks) does not have to parse the ADC a second time. Effective means
+      the corrected ADC's targets when a usable correction is in play, because
+      that is the ADC consumers read and the one products were derived from;
+      the raw ADC's targets otherwise. The findings still report on the raw
+      ADC either way — QC never silently prefers a correction.
     :returns: a :class:`Report` for this bin
     """
     cost = Cost(cost)
@@ -621,10 +631,14 @@ def check_fileset(path, *, bin_id=None, cost=Cost.PARSE,
     if cost_allows(cost, Cost.PARSE):
         props = _check_header(paths, parsed_id, report)
         targets = _check_adc(paths, sizes, props, report, cost)
-        if targets_out is not None:
-            targets_out.extend(targets)
+        effective = targets
         if mod_path is not None:
-            _check_adcmod(paths, sizes, mod_path, targets, report)
+            mod_targets = _check_adcmod(
+                paths, sizes, mod_path, targets, report)
+            if mod_targets is not None:
+                effective = mod_targets
+        if targets_out is not None:
+            targets_out.extend(effective)
     elif mod_path is not None and os.path.exists(mod_path) \
             and sizes['adc'] is None:
         report.add(finding(

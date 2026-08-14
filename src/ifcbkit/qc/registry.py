@@ -23,8 +23,10 @@ ROI = 'roi'
 ADCMOD = 'adcmod'
 PRODUCTS = 'products'
 COLLECTION = 'collection'
+INTERNAL = 'internal'
 
-GROUPS = (PRESENCE, IDENTIFIERS, HEADER, ADC, ROI, ADCMOD, PRODUCTS, COLLECTION)
+GROUPS = (PRESENCE, IDENTIFIERS, HEADER, ADC, ROI, ADCMOD, PRODUCTS,
+          COLLECTION, INTERNAL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +292,14 @@ _SPECS = [
           'One directory holds bins from more than one instrument.',
           '{path} holds bins from instruments {instruments}.',
           opt_in=True),
+
+    # --- QC itself ---
+    # A scan over a damaged archive is exactly where an unforeseen exception
+    # is most likely, and it must not cost the caller every other subject's
+    # report. The crash is reported against the subject it happened on.
+    _spec('check_failed', Severity.ERROR, Cost.STAT, INTERNAL,
+          'QC raised an unexpected exception on this subject.',
+          'QC failed on this subject: {error}'),
 ]
 
 CHECKS: dict = {spec.code: spec for spec in _SPECS}
