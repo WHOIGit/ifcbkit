@@ -118,4 +118,4 @@ from .qc import check_bin, check_collection, check_fileset, check_products
 #   from ifcbkit.stores.caching import CachingBinStore, CachingRoiStore
 
 
-__version__ = '0.3.0'
+__version__ = '0.4.0'

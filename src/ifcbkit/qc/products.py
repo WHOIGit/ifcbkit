@@ -20,7 +20,6 @@ to a recursive search.
 
 import csv
 import io
-import math
 import os
 import re
 from zipfile import BadZipFile, ZipFile
@@ -293,6 +292,7 @@ def _check_class_scores(path, subject, targets, report) -> None:
     """Tolerant pass over a v3 class scores HDF5 file."""
     try:
         import h5py
+        import numpy as np
     except ImportError:
         for code in ('class_missing_dataset', 'class_shape_mismatch',
                      'class_bad_values', 'class_roi_mismatch'):
@@ -324,8 +324,7 @@ def _check_class_scores(path, subject, targets, report) -> None:
             n_labels=len(labels), n_rois=len(roi_numbers)))
         return
 
-    bad = [int(roi_numbers[i]) for i, row in enumerate(scores)
-           if any(not math.isfinite(float(value)) for value in row)]
+    bad = [int(n) for n in roi_numbers[~np.isfinite(scores).all(axis=1)]]
     if bad:
         report.add(finding(
             'class_bad_values', subject, path=path,
