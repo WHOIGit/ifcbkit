@@ -111,8 +111,8 @@ from .stitching import (
 from . import qc
 from .qc import check_bin, check_collection, check_fileset, check_products
 
-# S3 and caching stores are NOT imported here — they require
-# amplify-storage-utils. Import them explicitly:
+# S3 and caching stores are NOT imported here (S3 stores need the ``s3``
+# extra). Import them explicitly:
 #
 #   from ifcbkit.stores.s3 import AsyncS3BinStore, S3RoiStore, ...
 #   from ifcbkit.stores.caching import CachingBinStore, CachingRoiStore
