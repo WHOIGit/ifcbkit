@@ -34,9 +34,32 @@ _PLAIN_KEYS = ('roi_id', 'x', 'y', 'width', 'height')
 _EXTENDED_KEYS = _PLAIN_KEYS + ('trigger', 'offset')
 _LINE_KEYS = ('roi_id', 'target', 'x', 'y', 'width', 'height', 'offset')
 
+# Reasons a line yields no target. Reported through the optional diagnostics
+# channel; consumers map them to their own vocabulary (ifcbkit.qc does).
+BLANK_LINE = 'blank_line'
+SHORT_ROW = 'short_row'
+UNPARSEABLE = 'unparseable'
+ZERO_GEOMETRY = 'zero_geometry'
+SKIP_REASONS = (BLANK_LINE, SHORT_ROW, UNPARSEABLE, ZERO_GEOMETRY)
 
-def _columns_for_bin_id(bin_id: str) -> dict:
-    """Return the column index mapping for the given bin ID style."""
+# Field names that D-style headers use for the columns ifcbkit reads, in
+# ADCFileFormat declarations. Compared case- and separator-insensitively.
+_DECLARED_FIELD_ALIASES = {
+    'x': ('roix',),
+    'y': ('roiy',),
+    'width': ('roiwidth',),
+    'height': ('roiheight',),
+    'offset': ('startbyte', 'startbyte#', 'roistartbyte'),
+}
+
+
+def columns_for_bin_id(bin_id: str) -> dict:
+    """Return the column index mapping for the given bin ID style.
+
+    :param bin_id: the bin ID string
+    :returns: :data:`I_STYLE_COLUMNS` or :data:`D_STYLE_COLUMNS` itself, not a
+      copy — callers may compare identity
+    """
     if bin_id.startswith('I'):
         return I_STYLE_COLUMNS
     return D_STYLE_COLUMNS
@@ -47,8 +70,10 @@ def _project(record: dict, keys) -> dict:
     return {k: record[k] for k in keys}
 
 
-def _parse_fields(bin_id: str, cols: dict, fields: list, line_index: int) -> dict | None:
-    """Parse split ADC fields into a full target record, or None if unusable.
+def _parse_fields_detail(
+    bin_id: str, cols: dict, fields: list, line_index: int,
+) -> tuple[dict | None, str | None]:
+    """Parse split ADC fields, reporting *why* a line is unusable.
 
     A line is usable only if the trigger, geometry, and offset columns all
     parse as integers and the ROI has non-zero area. Requiring the offset here
@@ -56,12 +81,15 @@ def _parse_fields(bin_id: str, cols: dict, fields: list, line_index: int) -> dic
     targets exist.
 
     :param bin_id: the bin ID string
-    :param cols: column index mapping from :func:`_columns_for_bin_id`
+    :param cols: column index mapping from :func:`columns_for_bin_id`
     :param fields: the comma-split fields of one ADC line
     :param line_index: 0-based line index
-    :returns: dict with target, roi_id, trigger, x, y, width, height, offset;
-      or None
+    :returns: ``(record, None)`` for a usable line, else ``(None, reason)``
+      where reason is one of ``blank_line``, ``short_row``, ``unparseable``,
+      ``zero_geometry``
     """
+    if fields == ['']:
+        return None, BLANK_LINE
     try:
         record = {
             'target': line_index + 1,
@@ -73,31 +101,90 @@ def _parse_fields(bin_id: str, cols: dict, fields: list, line_index: int) -> dic
             'height': int(fields[cols['height']]),
             'offset': int(fields[cols['offset']]),
         }
-    except (ValueError, IndexError):
-        return None
+    except IndexError:
+        return None, SHORT_ROW
+    except ValueError:
+        return None, UNPARSEABLE
     if record['width'] == 0 or record['height'] == 0:
-        return None
+        return None, ZERO_GEOMETRY
+    return record, None
+
+
+def _parse_fields(bin_id: str, cols: dict, fields: list, line_index: int) -> dict | None:
+    """Parse split ADC fields into a full target record, or None if unusable.
+
+    Thin wrapper over :func:`_parse_fields_detail` for callers that do not
+    care why a line was rejected.
+
+    :param bin_id: the bin ID string
+    :param cols: column index mapping from :func:`columns_for_bin_id`
+    :param fields: the comma-split fields of one ADC line
+    :param line_index: 0-based line index
+    :returns: dict with target, roi_id, trigger, x, y, width, height, offset;
+      or None
+    """
+    record, _ = _parse_fields_detail(bin_id, cols, fields, line_index)
     return record
 
 
-def iter_adc_targets(bin_id: str, adc_bytes: bytes) -> Iterator[dict]:
+def iter_adc_targets(bin_id: str, adc_bytes: bytes, *, diagnostics=None) -> Iterator[dict]:
     """Yield a full record for each ADC line describing a usable ROI.
 
     The single ADC parse path. Lines with no ROI (zero width or height) and
-    lines that do not parse are both skipped; distinguishing the two is the
-    job of a QC layer built on this function, not of this function.
+    lines that do not parse are both skipped. Pass ``diagnostics`` to find out
+    which lines those were and why — that channel is what lets a QC layer
+    report on ADC integrity without a second parse that could disagree with
+    this one.
 
     :param bin_id: the bin ID string (needed to determine column layout)
     :param adc_bytes: raw bytes of the .adc file
+    :param diagnostics: optional list; one dict is appended per skipped line,
+      with keys ``line`` (1-based, equal to the target number that line would
+      have had), ``reason``, ``text``, and ``n_fields``. Default ``None``
+      appends nothing and costs nothing.
     :returns: iterator of dicts with target, roi_id, trigger, x, y, width,
       height, offset
     """
-    cols = _columns_for_bin_id(bin_id)
+    cols = columns_for_bin_id(bin_id)
     text = adc_bytes.decode('utf-8', errors='replace')
     for i, line in enumerate(text.splitlines()):
-        record = _parse_fields(bin_id, cols, line.strip().split(','), i)
+        fields = line.strip().split(',')
+        record, reason = _parse_fields_detail(bin_id, cols, fields, i)
         if record is not None:
             yield record
+        elif diagnostics is not None:
+            diagnostics.append({
+                'line': i + 1,
+                'reason': reason,
+                'text': line,
+                'n_fields': len(fields),
+            })
+
+
+def columns_from_declaration(field_names) -> dict | None:
+    """Derive a column index mapping from declared ADC field names.
+
+    D-style headers declare the ADC layout in an ``ADCFileFormat:`` key (see
+    :func:`ifcbkit.header.parse_adc_file_format`). This turns those names into
+    the same mapping shape as :data:`I_STYLE_COLUMNS`, so a QC check can
+    compare what the file *says* its layout is against the layout ifcbkit
+    picks from the bin ID style.
+
+    :param field_names: declared field names, in file order
+    :returns: mapping with x, y, width, height, offset; or None if the
+      declaration does not name all five
+    """
+    lowered = [name.strip().lower().replace('_', '').replace(' ', '')
+               for name in field_names]
+    cols = {}
+    for key, aliases in _DECLARED_FIELD_ALIASES.items():
+        for alias in aliases:
+            if alias in lowered:
+                cols[key] = lowered.index(alias)
+                break
+        else:
+            return None
+    return cols
 
 
 def targets_to_dict(targets, *, extended: bool = False) -> dict:
@@ -153,7 +240,7 @@ def parse_adc_line(bin_id: str, line: str, line_index: int) -> dict | None:
     :param line_index: 0-based line index
     :returns: dict with roi_id, target, x, y, width, height, offset; or None
     """
-    cols = _columns_for_bin_id(bin_id)
+    cols = columns_for_bin_id(bin_id)
     record = _parse_fields(bin_id, cols, line.strip().split(','), line_index)
     if record is None:
         return None

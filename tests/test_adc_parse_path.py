@@ -178,18 +178,18 @@ def test_bin_images_parses_the_adc_once(monkeypatch):
     """bin_images used to call parse_adc_bytes and then extract_roi_images,
     which parsed the same bytes a second time.
 
-    Counts _columns_for_bin_id rather than iter_adc_targets: every ADC scan
+    Counts columns_for_bin_id rather than iter_adc_targets: every ADC scan
     goes through it exactly once, whichever module holds the reference to
     iter_adc_targets.
     """
     calls = []
-    real = adc_mod._columns_for_bin_id
+    real = adc_mod.columns_for_bin_id
 
     def counting(bin_id):
         calls.append(bin_id)
         return real(bin_id)
 
-    monkeypatch.setattr(adc_mod, '_columns_for_bin_id', counting)
+    monkeypatch.setattr(adc_mod, 'columns_for_bin_id', counting)
 
     bin_images(I_BIN_ID,
                _fixture_bytes(I_BIN_ID, 'adc'),

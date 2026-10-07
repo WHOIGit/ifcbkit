@@ -29,7 +29,7 @@ ADCMOD_DIR = 'adcmod'
 ADCMOD_EXT = '.adc.mod'
 
 
-def _adcmod_path(fileset_dir, pid, root_path):
+def adcmod_path(fileset_dir, pid, root_path):
     """Return the path a corrected ADC file would have for this fileset.
 
     The ``adcmod`` directory is strictly a sibling of ``root_path``. The day
@@ -47,7 +47,7 @@ def _adcmod_path(fileset_dir, pid, root_path):
 
 def sync_resolve_adc_path(fileset_dir, pid, root_path):
     """Return a corrected ``.adc.mod`` path if present, else the raw ``.adc``."""
-    cand = _adcmod_path(fileset_dir, pid, root_path)
+    cand = adcmod_path(fileset_dir, pid, root_path)
     if os.path.exists(cand):
         return cand
     return os.path.join(fileset_dir, pid + '.adc')
@@ -55,7 +55,7 @@ def sync_resolve_adc_path(fileset_dir, pid, root_path):
 
 async def async_resolve_adc_path(fileset_dir, pid, root_path):
     """Return a corrected ``.adc.mod`` path if present, else the raw ``.adc``."""
-    cand = _adcmod_path(fileset_dir, pid, root_path)
+    cand = adcmod_path(fileset_dir, pid, root_path)
     if await aiopath.exists(cand):
         return cand
     return os.path.join(fileset_dir, pid + '.adc')
