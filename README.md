@@ -7,7 +7,7 @@ A lean, modern Python library for parsing and accessing IFCB (Imaging FlowCytobo
 ```bash
 pip install -e .
 
-# With S3 store support:
+# With S3 store support (adds the S3 client dependencies):
 pip install -e ".[s3]"
 ```
 
@@ -267,9 +267,9 @@ Exit status is `0` for no errors, `1` when something of `error` severity was fou
 
 ## Dependencies
 
-**Required:** Python 3.10+, Pillow, aiofiles
+**Required:** Python 3.10+, Pillow, aiofiles, `amplify-storage-utils` (installed from git; provides the caching stores and the storage abstractions the S3 stores build on)
 
-**Optional:** `amplify-storage-utils` (for S3/caching stores — install with `pip install -e ".[s3]"`); `h5py` (for class-score reading and the class-score QC checks — `pip install -e ".[hdf5]"`; without it those checks are reported in `Report.skipped` rather than failing)
+**Optional:** the `s3` extra (`pip install -e ".[s3]"`, adds the S3 client dependencies for S3 stores); `h5py` (for class-score reading and the class-score QC checks — `pip install -e ".[hdf5]"`; without it those checks are reported in `Report.skipped` rather than failing)
 
 ---
 

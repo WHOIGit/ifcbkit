@@ -1,8 +1,8 @@
 """
 S3-backed stores for IFCB bin data and ROI images.
 
-Requires amplify-storage-utils as an optional dependency. Import this
-module only if amplify-storage-utils is installed.
+Requires the ``s3`` extra (amplify-storage-utils[s3]). Import this
+module only if it is installed.
 """
 
 import asyncio
@@ -23,7 +23,7 @@ def _require_storage():
     if not _HAS_STORAGE:
         raise ImportError(
             "S3 stores require amplify-storage-utils. "
-            "Install it with: pip install amplify-storage-utils"
+            "Install it with: pip install ifcbkit[s3]"
         )
 
 

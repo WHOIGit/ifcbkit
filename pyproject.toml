@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "Pillow",
     "aiofiles",
+    "amplify-storage-utils @ git+https://github.com/WHOIGit/amplify-storage-utils.git@v1.7.0",
 ]
 
 [project.scripts]
